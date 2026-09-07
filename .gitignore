@@ -1,0 +1,12 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Faultline runtime
+.faultline/
+*.log
+
+# Temp / OS
+.DS_Store
+*.tmp
+*.deb
