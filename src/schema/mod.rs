@@ -354,3 +354,89 @@ mod tests {
         assert_eq!(schema1.fingerprint(), schema2.fingerprint());
     }
 }
+
+impl DatabaseSchema {
+    pub fn generate_create_ddl(&self) -> String {
+        let mut ddl = String::new();
+
+        // 1. Enums
+        for e in &self.enums {
+            let variants: Vec<String> = e.variants.iter().map(|v| format!("'{}'", v)).collect();
+            ddl.push_str(&format!(
+                "CREATE TYPE \"{}\" AS ENUM ({});\n",
+                e.name,
+                variants.join(", ")
+            ));
+        }
+
+        // 2. Tables in topological order
+        let table_order = self
+            .topological_order()
+            .unwrap_or_else(|_| self.tables.iter().map(|t| t.name.clone()).collect());
+
+        for table_name in table_order {
+            if let Some(table) = self.get_table(&table_name) {
+                ddl.push_str(&format!("CREATE TABLE \"{}\" (\n", table.name));
+                let mut defs = Vec::new();
+
+                for col in &table.columns {
+                    let mut col_def =
+                        format!("  \"{}\" {}", col.name, col.data_type.display_name());
+                    if !col.is_nullable {
+                        col_def.push_str(" NOT NULL");
+                    }
+                    if let Some(default_val) = &col.default_value {
+                        col_def.push_str(&format!(" DEFAULT {}", default_val));
+                    }
+                    defs.push(col_def);
+                }
+
+                if let Some(pk) = &table.primary_key {
+                    let cols: Vec<String> =
+                        pk.columns.iter().map(|c| format!("\"{}\"", c)).collect();
+                    defs.push(format!(
+                        "  CONSTRAINT \"{}\" PRIMARY KEY ({})",
+                        pk.name,
+                        cols.join(", ")
+                    ));
+                }
+
+                for uq in &table.unique_constraints {
+                    let cols: Vec<String> =
+                        uq.columns.iter().map(|c| format!("\"{}\"", c)).collect();
+                    defs.push(format!(
+                        "  CONSTRAINT \"{}\" UNIQUE ({})",
+                        uq.name,
+                        cols.join(", ")
+                    ));
+                }
+
+                for fk in &table.foreign_keys {
+                    let cols: Vec<String> =
+                        fk.columns.iter().map(|c| format!("\"{}\"", c)).collect();
+                    let fcols: Vec<String> = fk
+                        .foreign_columns
+                        .iter()
+                        .map(|c| format!("\"{}\"", c))
+                        .collect();
+                    defs.push(format!(
+                        "  CONSTRAINT \"{}\" FOREIGN KEY ({}) REFERENCES \"{}\" ({}) ON DELETE {} ON UPDATE {}",
+                        fk.name, cols.join(", "), fk.foreign_table, fcols.join(", "), fk.on_delete, fk.on_update
+                    ));
+                }
+
+                for ck in &table.check_constraints {
+                    defs.push(format!(
+                        "  CONSTRAINT \"{}\" CHECK ({})",
+                        ck.name, ck.clause
+                    ));
+                }
+
+                ddl.push_str(&defs.join(",\n"));
+                ddl.push_str("\n);\n\n");
+            }
+        }
+
+        ddl
+    }
+}
