@@ -1,0 +1,15 @@
+version: 1
+project:
+  name: case-collision-demo
+database:
+  type: postgres
+  url: "postgres://postgres@127.0.0.1:54329/faultline_fixture_a"
+migration:
+  up_sql: "./041_normalize_email.sql"
+testing:
+  experiments: 50
+  seed: 912831
+  strategies:
+    - collision
+checks:
+  migration_success: true

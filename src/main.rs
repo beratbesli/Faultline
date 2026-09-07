@@ -70,7 +70,11 @@ async fn main() -> Result<()> {
             println!("==================================================");
 
             // 1. Config Check
-            let config_res = FaultlineConfig::discover_and_load(Path::new("."));
+            let config_res = if let Some(p) = cli.config.as_deref() {
+                FaultlineConfig::load_from_file(p).map(|c| (c, p.to_path_buf()))
+            } else {
+                FaultlineConfig::discover_and_load(Path::new("."))
+            };
             match &config_res {
                 Ok((_, path)) => println!("  [OK] Configuration file found: {}", path.display()),
                 Err(_) => println!("  [WARN] No faultline.yaml found in current directory"),

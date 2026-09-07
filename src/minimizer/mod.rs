@@ -76,7 +76,7 @@ mod tests {
         let mut rows = Vec::new();
         for i in 0..6 {
             let mut values = HashMap::new();
-            values.insert("id".to_string(), SqlValue::Integer(i as i32 + 1));
+            values.insert("id".to_string(), SqlValue::Integer(i + 1));
             let email = match i {
                 2 => "collision@example.com".to_string(),
                 4 => "COLLISION@EXAMPLE.COM".to_string(),

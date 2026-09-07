@@ -1,0 +1,17 @@
+version: 1
+project:
+  name: roundtrip-loss-demo
+database:
+  type: postgres
+  url: "postgres://postgres@127.0.0.1:54329/faultline_fixture_d"
+migration:
+  up_sql: "./migrate_up.sql"
+  down_sql: "./migrate_down.sql"
+testing:
+  experiments: 50
+  seed: 123
+  strategies:
+    - precision
+checks:
+  migration_success: true
+  roundtrip: true

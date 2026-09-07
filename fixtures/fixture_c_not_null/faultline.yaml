@@ -1,0 +1,15 @@
+version: 1
+project:
+  name: not-null-demo
+database:
+  type: postgres
+  url: "postgres://postgres@127.0.0.1:54329/faultline_fixture_c"
+migration:
+  up_sql: "./001_add_not_null.sql"
+testing:
+  experiments: 50
+  seed: 777
+  strategies:
+    - nullability
+checks:
+  migration_success: true

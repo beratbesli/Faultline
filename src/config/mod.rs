@@ -197,7 +197,23 @@ impl FaultlineConfig {
             )));
         }
         let content = fs::read_to_string(path)?;
-        Self::parse_yaml(&content)
+        let mut config = Self::parse_yaml(&content)?;
+
+        // Resolve relative migration SQL paths against config directory
+        if let Some(parent) = path.parent() {
+            if let Some(up) = &config.migration.up_sql {
+                if up.is_relative() {
+                    config.migration.up_sql = Some(parent.join(up));
+                }
+            }
+            if let Some(down) = &config.migration.down_sql {
+                if down.is_relative() {
+                    config.migration.down_sql = Some(parent.join(down));
+                }
+            }
+        }
+
+        Ok(config)
     }
 
     pub fn discover_and_load(dir: &Path) -> Result<(Self, PathBuf)> {

@@ -181,6 +181,9 @@ impl<'a> SearchEngine<'a> {
                     let base_url = &self.base_db_url;
                     let allow_non_iso = budget.allow_non_isolated;
 
+                    let config_ref = self.config;
+                    let target_failure_class = f_class;
+
                     Minimizer::minimize(
                         self.schema,
                         &candidate_state,
@@ -201,7 +204,29 @@ impl<'a> SearchEngine<'a> {
                                                         .run_up(&client, &isolated.db_url)
                                                         .await
                                                     {
-                                                        let reproduces = !m_res.success;
+                                                        let reproduces = if target_failure_class == FailureClass::SemanticLoss {
+                                                            if m_res.success {
+                                                                SemanticChecker::check_semantic_loss(
+                                                                    &client,
+                                                                    schema,
+                                                                    &cand,
+                                                                    &config_ref.invariants,
+                                                                ).await.map(|loss| loss.is_some()).unwrap_or(false)
+                                                            } else {
+                                                                false
+                                                            }
+                                                        } else if target_failure_class == FailureClass::IrreversibleMigration {
+                                                            RoundTripTester::test_roundtrip(
+                                                                &client,
+                                                                &isolated.db_url,
+                                                                runner,
+                                                                schema,
+                                                                &cand,
+                                                            ).await.map(|loss| loss.is_some()).unwrap_or(false)
+                                                        } else {
+                                                            !m_res.success
+                                                        };
+
                                                         let _ = isolated.destroy().await;
                                                         return reproduces;
                                                     }

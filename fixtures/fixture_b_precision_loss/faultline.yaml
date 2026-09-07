@@ -1,0 +1,16 @@
+version: 1
+project:
+  name: precision-loss-demo
+database:
+  type: postgres
+  url: "postgres://postgres@127.0.0.1:54329/faultline_fixture_b"
+migration:
+  up_sql: "./001_truncate_price.sql"
+testing:
+  experiments: 50
+  seed: 42
+  strategies:
+    - precision
+checks:
+  migration_success: true
+  semantic_loss: true
