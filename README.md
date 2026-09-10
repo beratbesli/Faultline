@@ -174,10 +174,13 @@ Compatible with Claude Code, Cursor, Gemini, and custom agents. Exposes tools fo
 - [Configuration Reference](docs/configuration.md)
 - [CLI Reference](docs/cli.md)
 - [MCP Server Setup](docs/mcp.md)
+- [Product Vision and Boundaries](docs/product-vision.md)
+- [Security Policy and Threat Model](SECURITY.md)
 - [Safety & Isolation Model](docs/safety.md)
 
 ---
 
 ## License
 
-Apache 2.0 or MIT License. Copyright 2026 Berat Besli.
+Licensed under Apache-2.0 or MIT, at your option. See
+[LICENSE-APACHE](LICENSE-APACHE) and [LICENSE-MIT](LICENSE-MIT).
