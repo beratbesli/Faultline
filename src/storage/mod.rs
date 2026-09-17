@@ -56,3 +56,20 @@ impl StorageManager {
         Ok(data)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn save_json_reports_disk_write_failure() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = StorageManager::new(temp_dir.path());
+        let path = temp_dir.path().join("existing-directory");
+        fs::create_dir(&path).unwrap();
+
+        assert!(storage
+            .save_json(&path, &serde_json::json!({"ok": true}))
+            .is_err());
+    }
+}

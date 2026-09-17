@@ -81,6 +81,7 @@ impl MigrationResult {
             if token.len() == 5
                 && token.chars().take(2).all(|c| c.is_ascii_alphanumeric())
                 && token.chars().skip(2).all(|c| c.is_ascii_alphanumeric())
+                && token.chars().any(|c| c.is_ascii_digit())
             {
                 sqlstate = Some(token.to_string());
                 failure_class = FailureClass::from_sqlstate(token);

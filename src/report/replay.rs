@@ -84,10 +84,17 @@ impl CounterexampleReplayer {
                 }
 
                 if !schema_sql.is_empty() {
-                    client.batch_execute(&schema_sql).await?;
+                    client.batch_execute(&schema_sql).await.map_err(|e| {
+                        FaultlineError::Schema(format!("Replay schema setup failed: {}", e))
+                    })?;
                 }
                 if !seed_sql.is_empty() {
-                    client.batch_execute(&seed_sql).await?;
+                    client.batch_execute(&seed_sql).await.map_err(|e| {
+                        FaultlineError::CandidateData(format!(
+                            "Replay candidate data could not be loaded: {}",
+                            e
+                        ))
+                    })?;
                 }
 
                 Ok::<Option<FailureSignature>, FaultlineError>(

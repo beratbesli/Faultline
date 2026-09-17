@@ -63,7 +63,9 @@ impl CommandMigrationRunner {
                 "Command execution error: {}",
                 e
             ))),
-            Err(_) => Err(FaultlineError::MigrationTimeout(self.timeout.as_secs())),
+            Err(_) => Err(FaultlineError::MigrationTimeout(
+                self.timeout.as_secs().max(1),
+            )),
         }
     }
 }
@@ -99,5 +101,47 @@ impl MigrationRunner for CommandMigrationRunner {
             combined.push_str(down);
         }
         Ok(compute_string_fingerprint(&combined))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::error::FailureClass;
+
+    #[tokio::test]
+    async fn timeout_is_reported_as_a_migration_timeout() {
+        let runner = CommandMigrationRunner {
+            up_command: None,
+            down_command: None,
+            timeout: Duration::from_millis(20),
+        };
+
+        let result = runner
+            .execute_command("sleep 1", "postgres://localhost/test")
+            .await;
+        assert!(matches!(result, Err(FaultlineError::MigrationTimeout(1))));
+    }
+
+    #[tokio::test]
+    async fn command_failures_preserve_sqlstate_signature() {
+        let runner = CommandMigrationRunner {
+            up_command: None,
+            down_command: None,
+            timeout: Duration::from_secs(1),
+        };
+
+        let result = runner
+            .execute_command(
+                "printf 'ERROR: duplicate key value violates unique constraint (SQLSTATE 23505)\\n' >&2; exit 3",
+                "postgres://localhost/test",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.exit_code, Some(3));
+        assert_eq!(result.failure_class, Some(FailureClass::UniqueViolation));
+        assert_eq!(result.sqlstate.as_deref(), Some("23505"));
+        assert!(result.failure_signature.is_some());
     }
 }

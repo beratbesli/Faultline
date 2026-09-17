@@ -57,6 +57,9 @@ pub enum FaultlineError {
     #[error("Schema error: {0}")]
     Schema(String),
 
+    #[error("Candidate data error: {0}")]
+    CandidateData(String),
+
     #[error("Migration execution error (exit {status}): {stderr}")]
     MigrationFailed {
         status: i32,

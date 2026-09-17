@@ -345,12 +345,19 @@ impl<'a> SearchEngine<'a> {
             let environment = client.get_environment().await?;
 
             // Apply baseline schema.
-            client.batch_execute(schema_ddl).await?;
+            client.batch_execute(schema_ddl).await.map_err(|e| {
+                FaultlineError::Schema(format!("Baseline schema setup failed: {}", e))
+            })?;
 
             // Insert candidate data.
             let insert_sql = candidate_state.to_insert_sql(self.schema)?;
             if !insert_sql.trim().is_empty() {
-                client.batch_execute(&insert_sql).await?;
+                client.batch_execute(&insert_sql).await.map_err(|e| {
+                    FaultlineError::CandidateData(format!(
+                        "Candidate data could not be loaded: {}",
+                        e
+                    ))
+                })?;
             }
 
             // Run migration UP.
