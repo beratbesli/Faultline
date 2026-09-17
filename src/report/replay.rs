@@ -36,6 +36,12 @@ impl CounterexampleReplayer {
             ));
         }
 
+        if repeat_count == 0 {
+            return Err(FaultlineError::Config(
+                "Replay repeat count must be greater than zero".to_string(),
+            ));
+        }
+
         let manifest_content = fs::read_to_string(&manifest_path)?;
         let manifest: CounterexampleManifest = serde_json::from_str(&manifest_content)?;
 
@@ -64,51 +70,65 @@ impl CounterexampleReplayer {
 
         for _ in 0..repeat_count {
             let isolated = IsolatedDatabase::create(base_db_url, allow_non_isolated).await?;
-            let client = match PgClient::connect(&isolated.db_url).await {
-                Ok(c) => c,
-                Err(e) => {
-                    let _ = isolated.destroy().await;
-                    return Err(e);
+            let attempt = async {
+                let client = PgClient::connect(&isolated.db_url).await?;
+
+                if !schema_sql.is_empty() {
+                    client.batch_execute(&schema_sql).await?;
+                }
+                if !seed_sql.is_empty() {
+                    client.batch_execute(&seed_sql).await?;
+                }
+
+                Ok::<Option<FailureSignature>, FaultlineError>(
+                    match client.batch_execute(&migration_sql).await {
+                        Ok(_) => None,
+                        Err(e) => Some(signature_from_faultline_error(&e).unwrap_or_else(|| {
+                            FailureSignature::new(FailureClass::Unknown, None, e.to_string())
+                        })),
+                    },
+                )
+            }
+            .await;
+
+            let cleanup = isolated.destroy().await;
+            let observed = match (attempt, cleanup) {
+                (Ok(observed), Ok(())) => observed,
+                (Err(attempt_error), Ok(())) => return Err(attempt_error),
+                (Ok(_), Err(cleanup_error)) => {
+                    return Err(FaultlineError::Session(format!(
+                        "Replay cleanup failed: {}",
+                        cleanup_error
+                    )))
+                }
+                (Err(attempt_error), Err(cleanup_error)) => {
+                    return Err(FaultlineError::Session(format!(
+                        "Replay failed: {}; cleanup also failed: {}",
+                        attempt_error, cleanup_error
+                    )))
                 }
             };
 
-            // Setup schema and seed
-            if !schema_sql.is_empty() {
-                client.batch_execute(&schema_sql).await?;
-            }
-            if !seed_sql.is_empty() {
-                client.batch_execute(&seed_sql).await?;
-            }
-
-            // Run migration
-            match client.batch_execute(&migration_sql).await {
-                Ok(_) => {
-                    // Migration succeeded (did not reproduce expected failure).
+            if let Some(actual) = observed {
+                let matches = manifest
+                    .failure_signature
+                    .as_ref()
+                    .map(|expected| actual.matches(expected))
+                    .unwrap_or(actual.failure_class == manifest.failure_class);
+                if matches {
+                    successes += 1;
+                } else if errors.is_empty() {
+                    errors.push(format!(
+                        "failure signature mismatch: expected {:?}, observed {:?}",
+                        manifest.failure_signature, actual
+                    ));
                 }
-                Err(e) => {
-                    let actual = signature_from_faultline_error(&e).unwrap_or_else(|| {
-                        FailureSignature::new(FailureClass::Unknown, None, e.to_string())
-                    });
-                    let matches = manifest
-                        .failure_signature
-                        .as_ref()
-                        .map(|expected| actual.matches(expected))
-                        .unwrap_or(actual.failure_class == manifest.failure_class);
-                    if matches {
-                        successes += 1;
-                    } else {
-                        errors.push(format!(
-                            "failure signature mismatch: expected {:?}, observed {:?}",
-                            manifest.failure_signature, actual
-                        ));
-                    }
-                    if errors.is_empty() {
-                        errors.push(actual.normalized_message.clone());
-                    }
-                }
+            } else if errors.is_empty() {
+                errors.push(format!(
+                    "migration succeeded; expected {}",
+                    manifest.failure_class.display_name()
+                ));
             }
-
-            let _ = isolated.destroy().await;
         }
 
         Ok(ReplayResult {
