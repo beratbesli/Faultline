@@ -1,6 +1,7 @@
 use faultline::config::FaultlineConfig;
 use faultline::db::client::PgClient;
 use faultline::migration::sql::SqlMigrationRunner;
+use faultline::report::CounterexampleReplayer;
 use faultline::schema::introspection::SchemaInspector;
 use faultline::search::{SearchBudget, SearchEngine};
 use faultline::storage::StorageManager;
@@ -80,4 +81,15 @@ async fn test_end_to_end_case_collision_scenario() {
     let min_state = summary.minimal_state.expect("Must have minimal state");
     let users_rows = &min_state.tables["users"].rows;
     assert_eq!(users_rows.len(), 2);
+
+    let replay = CounterexampleReplayer::replay(
+        &storage.counterexamples_dir().join(best.id),
+        TEST_DB_URL,
+        2,
+        false,
+    )
+    .await
+    .expect("Generated replay bundle must reproduce its failure");
+    assert_eq!(replay.successful_reproductions, 2);
+    assert!(replay.is_deterministic);
 }

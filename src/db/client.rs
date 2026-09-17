@@ -117,3 +117,14 @@ impl PgClient {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn connection_failures_are_classified_separately() {
+        let result = PgClient::connect("postgres://127.0.0.1:1/faultline_test").await;
+        assert!(matches!(result, Err(FaultlineError::DbConnection(_))));
+    }
+}

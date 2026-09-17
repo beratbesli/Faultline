@@ -148,4 +148,22 @@ mod tests {
         assert_eq!(result.sqlstate.as_deref(), Some("23505"));
         assert!(result.failure_signature.is_some());
     }
+
+    #[tokio::test]
+    async fn crashed_migration_process_is_a_command_failure() {
+        let runner = CommandMigrationRunner {
+            up_command: None,
+            down_command: None,
+            timeout: Duration::from_secs(1),
+        };
+
+        let result = runner
+            .execute_command("kill -KILL $$", "postgres://localhost/test")
+            .await
+            .unwrap();
+
+        assert!(!result.success);
+        assert_eq!(result.failure_class, Some(FailureClass::CommandFailure));
+        assert_eq!(result.exit_code, None);
+    }
 }
