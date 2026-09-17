@@ -479,19 +479,37 @@ async fn main() -> Result<()> {
                 exit(2);
             }
 
-            fs::create_dir_all(&args.output_dir)?;
-            for item in [
+            let required_files = [
                 "manifest.json",
                 "schema.sql",
                 "seed.sql",
                 "migration_up.sql",
                 "reproduce.sh",
                 "README.md",
-            ] {
-                let src = target_path.join(item);
-                if src.exists() {
-                    fs::copy(&src, args.output_dir.join(item))?;
+            ];
+            for item in required_files {
+                let source = target_path.join(item);
+                if !source.is_file() {
+                    return Err(faultline::FaultlineError::Config(format!(
+                        "Counterexample bundle is incomplete; missing {}",
+                        source.display()
+                    )));
                 }
+            }
+
+            fs::create_dir_all(&args.output_dir)?;
+            for item in required_files {
+                let src = target_path.join(item);
+                fs::copy(&src, args.output_dir.join(item))?;
+            }
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let script_path = args.output_dir.join("reproduce.sh");
+                let mut permissions = fs::metadata(&script_path)?.permissions();
+                permissions.set_mode(0o755);
+                fs::set_permissions(script_path, permissions)?;
             }
 
             println!(
@@ -502,25 +520,6 @@ async fn main() -> Result<()> {
         }
         Commands::Mcp(_args) => {
             McpServer::run().await?;
-            Ok(())
-        }
-        Commands::Resume(args) => {
-            let session_selection = if args.session_id.is_some() {
-                "the requested session"
-            } else {
-                "the latest session"
-            };
-            println!(
-                "Resuming {} with additional budget {:?}",
-                session_selection, args.experiments
-            );
-            Ok(())
-        }
-        Commands::Minimize(args) => {
-            println!(
-                "Minimization is automatically applied during search. Requested target: {}",
-                args.target
-            );
             Ok(())
         }
     }

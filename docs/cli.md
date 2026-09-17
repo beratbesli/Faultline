@@ -59,6 +59,8 @@ Exports a self-contained reproduction bundle (manifest, schema, seed, migration,
 ```bash
 faultline export <counterexample_id> <output_directory>
 ```
+The search command performs minimization automatically. There is currently no standalone
+resume or minimize command; unsupported workflows are intentionally omitted from the CLI.
 
 ### `faultline mcp`
 Launches the Model Context Protocol (MCP) JSON-RPC stdio server for AI coding agents.

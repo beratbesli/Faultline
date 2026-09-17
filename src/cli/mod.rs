@@ -49,12 +49,6 @@ pub enum Commands {
     #[command(about = "Show status of current or previous search sessions")]
     Status(StatusArgs),
 
-    #[command(about = "Resume an interrupted search session")]
-    Resume(ResumeArgs),
-
-    #[command(about = "Minimize a discovered counterexample to its smallest reproducing state")]
-    Minimize(MinimizeArgs),
-
     #[command(about = "Replay and verify a counterexample reproducibly")]
     Replay(ReplayArgs),
 
@@ -136,21 +130,6 @@ pub struct TestArgs {
 
 #[derive(Args, Debug, Default)]
 pub struct StatusArgs {}
-
-#[derive(Args, Debug, Default)]
-pub struct ResumeArgs {
-    #[arg(short, long, help = "Session ID to resume (defaults to latest)")]
-    pub session_id: Option<String>,
-
-    #[arg(short, long, help = "Additional experiment budget")]
-    pub experiments: Option<usize>,
-}
-
-#[derive(Args, Debug)]
-pub struct MinimizeArgs {
-    #[arg(help = "Path or ID of counterexample to minimize")]
-    pub target: String,
-}
 
 #[derive(Args, Debug)]
 pub struct ReplayArgs {
