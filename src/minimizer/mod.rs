@@ -1,12 +1,16 @@
 pub mod ddmin;
 
+use crate::db::error::FailureSignature;
 use crate::generator::DatabaseState;
 use crate::schema::DatabaseSchema;
 use std::future::Future;
 use std::pin::Pin;
 
 pub type TestFn<'a> = Box<
-    dyn Fn(&DatabaseState) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> + Send + Sync + 'a,
+    dyn Fn(&DatabaseState) -> Pin<Box<dyn Future<Output = Option<FailureSignature>> + Send + 'a>>
+        + Send
+        + Sync
+        + 'a,
 >;
 
 pub struct Minimizer;
@@ -15,13 +19,16 @@ impl Minimizer {
     pub async fn minimize<'a>(
         schema: &DatabaseSchema,
         initial_state: &DatabaseState,
+        target_signature: Option<FailureSignature>,
         test_fn: TestFn<'a>,
     ) -> DatabaseState {
         // Step 1: Hierarchical / Dependency-aware row reduction
-        let mut current_state = ddmin::reduce_rows(schema, initial_state, &test_fn).await;
+        let mut current_state =
+            ddmin::reduce_rows(schema, initial_state, target_signature.as_ref(), &test_fn).await;
 
         // Step 2: Value-level shrinking
-        current_state = ddmin::shrink_values(schema, &current_state, &test_fn).await;
+        current_state =
+            ddmin::shrink_values(schema, &current_state, target_signature.as_ref(), &test_fn).await;
 
         current_state
     }
@@ -113,10 +120,28 @@ mod tests {
                 }
             }
             let fail = has_lower && has_upper;
-            Box::pin(async move { fail }) as Pin<Box<dyn Future<Output = bool> + Send>>
+            Box::pin(async move {
+                fail.then(|| {
+                    FailureSignature::new(
+                        crate::db::error::FailureClass::UniqueViolation,
+                        Some("23505".to_string()),
+                        "duplicate key value violates unique constraint",
+                    )
+                })
+            }) as Pin<Box<dyn Future<Output = Option<FailureSignature>> + Send>>
         });
 
-        let minimized = Minimizer::minimize(&schema, &initial_state, test_fn).await;
+        let minimized = Minimizer::minimize(
+            &schema,
+            &initial_state,
+            Some(FailureSignature::new(
+                crate::db::error::FailureClass::UniqueViolation,
+                Some("23505".to_string()),
+                "duplicate key value violates unique constraint",
+            )),
+            test_fn,
+        )
+        .await;
 
         let final_rows = &minimized.tables["users"].rows;
         assert_eq!(

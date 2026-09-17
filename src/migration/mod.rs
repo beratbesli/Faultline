@@ -4,7 +4,7 @@ pub mod fingerprint;
 pub mod sql;
 
 use crate::db::client::PgClient;
-use crate::db::error::FailureClass;
+use crate::db::error::{FailureClass, FailureSignature};
 use crate::error::Result;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -17,6 +17,8 @@ pub struct MigrationResult {
     pub error_message: Option<String>,
     pub sqlstate: Option<String>,
     pub failure_class: Option<FailureClass>,
+    #[serde(default)]
+    pub failure_signature: Option<FailureSignature>,
     pub stdout: String,
     pub stderr: String,
 }
@@ -30,6 +32,7 @@ impl MigrationResult {
             error_message: None,
             sqlstate: None,
             failure_class: None,
+            failure_signature: None,
             stdout,
             stderr: String::new(),
         }
@@ -52,8 +55,13 @@ impl MigrationResult {
             exit_code: Some(1),
             duration_ms: duration.as_millis() as u64,
             error_message: Some(full_msg),
-            sqlstate: Some(sqlstate),
+            sqlstate: Some(sqlstate.clone()),
             failure_class: Some(failure_class),
+            failure_signature: Some(FailureSignature::new(
+                failure_class,
+                Some(sqlstate.clone()),
+                &message,
+            )),
             stdout: String::new(),
             stderr: message,
         }
@@ -68,11 +76,14 @@ impl MigrationResult {
         let mut failure_class = FailureClass::CommandFailure;
         let mut sqlstate = None;
 
-        // Try extracting SQLSTATE from stderr if present (e.g. 23505)
-        for code in ["23505", "23502", "23503", "23514", "22003", "22P02"] {
-            if stderr.contains(code) {
-                sqlstate = Some(code.to_string());
-                failure_class = FailureClass::from_sqlstate(code);
+        // Try extracting SQLSTATE from stderr if present (e.g. 23505).
+        for token in stderr.split(|c: char| !c.is_ascii_alphanumeric()) {
+            if token.len() == 5
+                && token.chars().take(2).all(|c| c.is_ascii_alphanumeric())
+                && token.chars().skip(2).all(|c| c.is_ascii_alphanumeric())
+            {
+                sqlstate = Some(token.to_string());
+                failure_class = FailureClass::from_sqlstate(token);
                 break;
             }
         }
@@ -82,8 +93,13 @@ impl MigrationResult {
             exit_code,
             duration_ms: duration.as_millis() as u64,
             error_message: Some(stderr.clone()),
-            sqlstate,
+            sqlstate: sqlstate.clone(),
             failure_class: Some(failure_class),
+            failure_signature: Some(FailureSignature::new(
+                failure_class,
+                sqlstate.clone(),
+                &stderr,
+            )),
             stdout,
             stderr,
         }

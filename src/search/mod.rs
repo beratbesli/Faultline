@@ -7,7 +7,7 @@ pub use session::TestSession;
 
 use crate::config::FaultlineConfig;
 use crate::db::client::PgClient;
-use crate::db::error::FailureClass;
+use crate::db::error::{FailureClass, FailureSignature};
 use crate::db::isolation::IsolatedDatabase;
 use crate::error::Result;
 use crate::generator::seed::GenerationSeed;
@@ -184,10 +184,13 @@ impl<'a> SearchEngine<'a> {
                     let config_ref = self.config;
                     let target_failure_class = f_class;
 
+                    let target_signature = migration_res.failure_signature.clone();
                     Minimizer::minimize(
                         self.schema,
                         &candidate_state,
+                        target_signature.clone(),
                         Box::new(move |candidate| {
+                            let expected_signature = target_signature.clone();
                             let ddl = schema_ddl_ref.clone();
                             let b_url = base_url.clone();
                             let cand = candidate.clone();
@@ -211,9 +214,15 @@ impl<'a> SearchEngine<'a> {
                                                                     schema,
                                                                     &cand,
                                                                     &config_ref.invariants,
-                                                                ).await.map(|loss| loss.is_some()).unwrap_or(false)
+                                                                ).await.ok().and_then(|loss| loss.map(|_| {
+                                                                    FailureSignature::new(
+                                                                        FailureClass::SemanticLoss,
+                                                                        None,
+                                                                        "semantic loss",
+                                                                    )
+                                                                }))
                                                             } else {
-                                                                false
+                                                                None
                                                             }
                                                         } else if target_failure_class == FailureClass::IrreversibleMigration {
                                                             RoundTripTester::test_roundtrip(
@@ -222,9 +231,21 @@ impl<'a> SearchEngine<'a> {
                                                                 runner,
                                                                 schema,
                                                                 &cand,
-                                                            ).await.map(|loss| loss.is_some()).unwrap_or(false)
+                                                            ).await.ok().and_then(|loss| loss.map(|_| {
+                                                                FailureSignature::new(
+                                                                    FailureClass::IrreversibleMigration,
+                                                                    None,
+                                                                    "irreversible migration",
+                                                                )
+                                                            }))
+                                } else if let Some(expected) = &expected_signature {
+                                                            m_res
+                                                                .failure_signature
+                                                                .as_ref()
+                                                                .filter(|actual| actual.matches(expected))
+                                                                .cloned()
                                                         } else {
-                                                            !m_res.success
+                                                            m_res.failure_signature.clone()
                                                         };
 
                                                         let _ = isolated.destroy().await;
@@ -236,7 +257,7 @@ impl<'a> SearchEngine<'a> {
                                     }
                                     let _ = isolated.destroy().await;
                                 }
-                                false
+                                None
                             })
                         }),
                     )
@@ -251,6 +272,7 @@ impl<'a> SearchEngine<'a> {
                     seed: budget.seed,
                     strategy: strategy.name().to_string(),
                     failure_class: f_class,
+                    failure_signature: migration_res.failure_signature.clone(),
                     error_message: migration_res
                         .error_message
                         .unwrap_or_else(|| "Unknown failure".to_string()),
@@ -341,6 +363,11 @@ impl<'a> SearchEngine<'a> {
                     let mut modified_res = migration_res;
                     modified_res.success = false;
                     modified_res.error_message = Some(msg);
+                    modified_res.failure_signature = Some(FailureSignature::new(
+                        FailureClass::SemanticLoss,
+                        None,
+                        "semantic loss",
+                    ));
                     return Ok((modified_res, failure_class));
                 }
             }
@@ -362,6 +389,11 @@ impl<'a> SearchEngine<'a> {
                     let mut modified_res = migration_res;
                     modified_res.success = false;
                     modified_res.error_message = Some(msg);
+                    modified_res.failure_signature = Some(FailureSignature::new(
+                        FailureClass::IrreversibleMigration,
+                        None,
+                        "irreversible migration",
+                    ));
                     return Ok((modified_res, failure_class));
                 }
             }

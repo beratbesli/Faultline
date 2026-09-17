@@ -15,6 +15,7 @@ pub mod strategy;
 
 pub use config::FaultlineConfig;
 pub use db::PgClient;
+pub use db::{FailureClass, FailureSignature};
 pub use error::{FaultlineError, Result};
 pub use generator::{DatabaseState, RowData, SqlValue, TableData};
 pub use mcp::McpServer;

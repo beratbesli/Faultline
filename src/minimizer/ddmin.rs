@@ -1,3 +1,4 @@
+use crate::db::error::FailureSignature;
 use crate::generator::{DatabaseState, SqlValue};
 use crate::minimizer::TestFn;
 use crate::schema::DatabaseSchema;
@@ -6,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 pub async fn reduce_rows<'a>(
     schema: &DatabaseSchema,
     initial_state: &DatabaseState,
+    target_signature: Option<&FailureSignature>,
     test_fn: &TestFn<'a>,
 ) -> DatabaseState {
     let mut current_state = initial_state.clone();
@@ -41,7 +43,7 @@ pub async fn reduce_rows<'a>(
                 clean_orphaned_fks(schema, &mut candidate_state);
 
                 // Test if the reduced state still reproduces the failure
-                if test_fn(&candidate_state).await {
+                if preserves_failure(test_fn, &candidate_state, target_signature).await {
                     current_state = candidate_state;
                     // Keep index same to test the new row that shifted into position
                 } else {
@@ -57,6 +59,7 @@ pub async fn reduce_rows<'a>(
 pub async fn shrink_values<'a>(
     _schema: &DatabaseSchema,
     initial_state: &DatabaseState,
+    target_signature: Option<&FailureSignature>,
     test_fn: &TestFn<'a>,
 ) -> DatabaseState {
     let mut current_state = initial_state.clone();
@@ -100,7 +103,8 @@ pub async fn shrink_values<'a>(
                                 .values
                                 .insert(col_name.clone(), SqlValue::Text(cand));
 
-                            if test_fn(&candidate_state).await {
+                            if preserves_failure(test_fn, &candidate_state, target_signature).await
+                            {
                                 current_state = candidate_state;
                                 break;
                             }
@@ -112,6 +116,21 @@ pub async fn shrink_values<'a>(
     }
 
     current_state
+}
+
+async fn preserves_failure<'a>(
+    test_fn: &TestFn<'a>,
+    candidate: &DatabaseState,
+    target_signature: Option<&FailureSignature>,
+) -> bool {
+    let result = test_fn(candidate).await;
+    match target_signature {
+        Some(expected) => result
+            .as_ref()
+            .map(|actual| actual.matches(expected))
+            .unwrap_or(false),
+        None => result.is_some(),
+    }
 }
 
 fn clean_orphaned_fks(schema: &DatabaseSchema, state: &mut DatabaseState) {

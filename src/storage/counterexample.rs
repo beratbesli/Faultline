@@ -1,4 +1,4 @@
-use crate::db::error::FailureClass;
+use crate::db::error::{FailureClass, FailureSignature};
 use crate::error::Result;
 use crate::generator::DatabaseState;
 use crate::schema::DatabaseSchema;
@@ -15,6 +15,8 @@ pub struct CounterexampleManifest {
     pub seed: u64,
     pub strategy: String,
     pub failure_class: FailureClass,
+    #[serde(default)]
+    pub failure_signature: Option<FailureSignature>,
     pub error_message: String,
     pub rows_count: usize,
     pub state_fingerprint: String,

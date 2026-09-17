@@ -19,6 +19,39 @@ pub enum FailureClass {
     Unknown,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FailureSignature {
+    pub failure_class: FailureClass,
+    pub sqlstate: Option<String>,
+    pub normalized_message: String,
+}
+
+impl FailureSignature {
+    pub fn new(
+        failure_class: FailureClass,
+        sqlstate: Option<String>,
+        message: impl AsRef<str>,
+    ) -> Self {
+        Self {
+            failure_class,
+            sqlstate,
+            normalized_message: normalize_failure_message(message.as_ref()),
+        }
+    }
+
+    pub fn matches(&self, other: &Self) -> bool {
+        self == other
+    }
+}
+
+pub fn normalize_failure_message(message: &str) -> String {
+    message
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
+
 impl FailureClass {
     pub const DATA_EXCEPTION_LIKE: FailureClass = FailureClass::TypeCastError;
 
@@ -84,5 +117,53 @@ pub fn classify_postgres_error(err: &tokio_postgres::Error) -> FaultlineError {
         }))
     } else {
         FaultlineError::DbQuery(err.to_string())
+    }
+}
+
+pub fn signature_from_faultline_error(err: &FaultlineError) -> Option<FailureSignature> {
+    match err {
+        FaultlineError::PostgresExecution(detail) => Some(FailureSignature::new(
+            FailureClass::from_sqlstate(&detail.sqlstate),
+            Some(detail.sqlstate.clone()),
+            &detail.message,
+        )),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failure_signature_normalizes_whitespace_and_case() {
+        let first = FailureSignature::new(
+            FailureClass::UniqueViolation,
+            Some("23505".to_string()),
+            "duplicate   KEY\nvalue",
+        );
+        let second = FailureSignature::new(
+            FailureClass::UniqueViolation,
+            Some("23505".to_string()),
+            "Duplicate key value",
+        );
+
+        assert!(first.matches(&second));
+    }
+
+    #[test]
+    fn failure_signature_keeps_distinct_sqlstates_separate() {
+        let unique = FailureSignature::new(
+            FailureClass::UniqueViolation,
+            Some("23505".to_string()),
+            "constraint failed",
+        );
+        let not_null = FailureSignature::new(
+            FailureClass::NotNullViolation,
+            Some("23502".to_string()),
+            "constraint failed",
+        );
+
+        assert!(!unique.matches(&not_null));
     }
 }

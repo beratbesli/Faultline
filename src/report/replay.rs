@@ -1,4 +1,5 @@
 use crate::db::client::PgClient;
+use crate::db::error::{signature_from_faultline_error, FailureClass, FailureSignature};
 use crate::db::isolation::IsolatedDatabase;
 use crate::error::{FaultlineError, Result};
 use crate::storage::CounterexampleManifest;
@@ -82,13 +83,27 @@ impl CounterexampleReplayer {
             // Run migration
             match client.batch_execute(&migration_sql).await {
                 Ok(_) => {
-                    // Migration succeeded (did not reproduce expected failure)
+                    // Migration succeeded (did not reproduce expected failure).
                 }
                 Err(e) => {
-                    // Migration failed! Check if it matches
-                    successes += 1;
+                    let actual = signature_from_faultline_error(&e).unwrap_or_else(|| {
+                        FailureSignature::new(FailureClass::Unknown, None, e.to_string())
+                    });
+                    let matches = manifest
+                        .failure_signature
+                        .as_ref()
+                        .map(|expected| actual.matches(expected))
+                        .unwrap_or(actual.failure_class == manifest.failure_class);
+                    if matches {
+                        successes += 1;
+                    } else {
+                        errors.push(format!(
+                            "failure signature mismatch: expected {:?}, observed {:?}",
+                            manifest.failure_signature, actual
+                        ));
+                    }
                     if errors.is_empty() {
-                        errors.push(e.to_string());
+                        errors.push(actual.normalized_message.clone());
                     }
                 }
             }
