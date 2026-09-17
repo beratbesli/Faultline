@@ -328,6 +328,9 @@ async fn main() -> Result<()> {
                         if let Some(cx) = s.best_counterexample_id {
                             println!("Counterexample:   {}", cx.bold().red());
                         }
+                        if let Some(error) = s.error {
+                            println!("Error:             {}", error);
+                        }
                         println!("--------------------------------------------------");
                     }
                 }

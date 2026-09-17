@@ -12,6 +12,8 @@ pub struct TestSession {
     pub counterexamples_found: usize,
     pub best_counterexample_id: Option<String>,
     pub is_completed: bool,
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 impl TestSession {
@@ -27,6 +29,7 @@ impl TestSession {
             counterexamples_found: 0,
             best_counterexample_id: None,
             is_completed: false,
+            error: None,
         }
     }
 }

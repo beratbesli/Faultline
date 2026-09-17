@@ -75,7 +75,32 @@ impl<'a> SearchEngine<'a> {
         }
     }
 
+    fn save_session(&self, session: &TestSession) -> Result<()> {
+        let session_file = self
+            .storage
+            .sessions_dir()
+            .join(format!("{}.json", session.session_id));
+        self.storage.save_json(&session_file, session)
+    }
+
+    fn fail_search(
+        &self,
+        session: &mut TestSession,
+        error: FaultlineError,
+    ) -> Result<SearchSummary> {
+        session.updated_at = Utc::now();
+        session.error = Some(error.to_string());
+        match self.save_session(session) {
+            Ok(()) => Err(error),
+            Err(save_error) => Err(FaultlineError::Session(format!(
+                "{}; failed to persist failed session: {}",
+                error, save_error
+            ))),
+        }
+    }
+
     pub async fn run_search(&self, budget: SearchBudget) -> Result<SearchSummary> {
+        let migration_fingerprint = self.runner.fingerprint()?;
         let session_id = Uuid::new_v4().simple().to_string();
         let mut session = TestSession::new(session_id.clone(), budget.seed);
         let start_time = Instant::now();
@@ -83,7 +108,6 @@ impl<'a> SearchEngine<'a> {
         let root_seed = GenerationSeed::new(budget.seed);
         let mut tested_fingerprints: HashSet<String> = HashSet::new();
         let schema_fingerprint = self.schema.fingerprint();
-        let migration_fingerprint = self.runner.fingerprint()?;
 
         let mut best_manifest: Option<CounterexampleManifest> = None;
         let mut best_minimal_state: Option<DatabaseState> = None;
@@ -103,11 +127,14 @@ impl<'a> SearchEngine<'a> {
             let strategy = self.scheduler.get_strategy(exp_idx);
 
             // Generate candidate state
-            let candidate_state = strategy.generate_candidate(
+            let candidate_state = match strategy.generate_candidate(
                 self.schema,
                 budget.max_rows_per_table,
                 &mut sub_rng,
-            )?;
+            ) {
+                Ok(candidate) => candidate,
+                Err(error) => return self.fail_search(&mut session, error),
+            };
 
             let fingerprint = candidate_state.fingerprint();
             if !tested_fingerprints.insert(fingerprint.clone()) {
@@ -130,7 +157,10 @@ impl<'a> SearchEngine<'a> {
                 )
                 .await;
 
-            let (migration_res, failure_class, environment) = trial_result?;
+            let (migration_res, failure_class, environment) = match trial_result {
+                Ok(result) => result,
+                Err(error) => return self.fail_search(&mut session, error),
+            };
 
             let counterexample_found = failure_class.is_some();
 
@@ -160,7 +190,9 @@ impl<'a> SearchEngine<'a> {
                 .storage
                 .experiments_dir()
                 .join(format!("{}.json", exp_id));
-            self.storage.save_json(&exp_file, &record)?;
+            if let Err(error) = self.storage.save_json(&exp_file, &record) {
+                return self.fail_search(&mut session, error);
+            }
 
             if let Some(f_class) = failure_class {
                 session.counterexamples_found += 1;
@@ -302,14 +334,16 @@ impl<'a> SearchEngine<'a> {
                 };
 
                 // Export counterexample bundle
-                CounterexampleArtifact::export_bundle(
+                if let Err(error) = CounterexampleArtifact::export_bundle(
                     &self.storage.counterexamples_dir(),
                     &manifest,
                     self.schema,
                     &minimal_state,
                     &schema_ddl,
                     self.migration_up_sql.as_deref(),
-                )?;
+                ) {
+                    return self.fail_search(&mut session, error);
+                }
 
                 session.best_counterexample_id = Some(counterexample_id);
                 best_manifest = Some(manifest);
@@ -324,11 +358,7 @@ impl<'a> SearchEngine<'a> {
         session.updated_at = Utc::now();
 
         // Save session
-        let session_file = self
-            .storage
-            .sessions_dir()
-            .join(format!("{}.json", session_id));
-        self.storage.save_json(&session_file, &session)?;
+        self.save_session(&session)?;
 
         Ok(SearchSummary {
             session_id,
