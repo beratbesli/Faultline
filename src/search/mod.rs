@@ -9,7 +9,7 @@ use crate::config::FaultlineConfig;
 use crate::db::client::PgClient;
 use crate::db::error::{FailureClass, FailureSignature};
 use crate::db::isolation::IsolatedDatabase;
-use crate::error::Result;
+use crate::error::{FaultlineError, Result};
 use crate::generator::seed::GenerationSeed;
 use crate::generator::DatabaseState;
 use crate::migration::MigrationRunner;
@@ -127,13 +127,7 @@ impl<'a> SearchEngine<'a> {
                 )
                 .await;
 
-            let (migration_res, failure_class) = match trial_result {
-                Ok((res, fail)) => (res, fail),
-                Err(e) => {
-                    tracing::warn!("Trial error: {}", e);
-                    continue;
-                }
-            };
+            let (migration_res, failure_class) = trial_result?;
 
             let counterexample_found = failure_class.is_some();
 
@@ -157,7 +151,7 @@ impl<'a> SearchEngine<'a> {
                 .storage
                 .experiments_dir()
                 .join(format!("{}.json", exp_id));
-            let _ = self.storage.save_json(&exp_file, &record);
+            self.storage.save_json(&exp_file, &record)?;
 
             if let Some(f_class) = failure_class {
                 session.counterexamples_found += 1;
@@ -281,14 +275,14 @@ impl<'a> SearchEngine<'a> {
                 };
 
                 // Export counterexample bundle
-                let _ = CounterexampleArtifact::export_bundle(
+                CounterexampleArtifact::export_bundle(
                     &self.storage.counterexamples_dir(),
                     &manifest,
                     self.schema,
                     &minimal_state,
                     &schema_ddl,
                     self.migration_up_sql.as_deref(),
-                );
+                )?;
 
                 session.best_counterexample_id = Some(counterexample_id);
                 best_manifest = Some(manifest);
@@ -307,7 +301,7 @@ impl<'a> SearchEngine<'a> {
             .storage
             .sessions_dir()
             .join(format!("{}.json", session_id));
-        let _ = self.storage.save_json(&session_file, &session);
+        self.storage.save_json(&session_file, &session)?;
 
         Ok(SearchSummary {
             session_id,
@@ -328,78 +322,92 @@ impl<'a> SearchEngine<'a> {
         roundtrip: bool,
     ) -> Result<(crate::migration::MigrationResult, Option<FailureClass>)> {
         let isolated = IsolatedDatabase::create(&self.base_db_url, allow_non_isolated).await?;
-        let client = PgClient::connect(&isolated.db_url).await?;
+        let trial_result = async {
+            let client = PgClient::connect(&isolated.db_url).await?;
 
-        // Apply baseline schema
-        client.batch_execute(schema_ddl).await?;
+            // Apply baseline schema.
+            client.batch_execute(schema_ddl).await?;
 
-        // Insert candidate data
-        let insert_sql = candidate_state.to_insert_sql(self.schema)?;
-        if !insert_sql.trim().is_empty() {
-            client.batch_execute(&insert_sql).await?;
-        }
+            // Insert candidate data.
+            let insert_sql = candidate_state.to_insert_sql(self.schema)?;
+            if !insert_sql.trim().is_empty() {
+                client.batch_execute(&insert_sql).await?;
+            }
 
-        // Run migration UP
-        let migration_res = self.runner.run_up(&client, &isolated.db_url).await?;
+            // Run migration UP.
+            let migration_res = self.runner.run_up(&client, &isolated.db_url).await?;
 
-        let mut failure_class = None;
+            let mut failure_class = None;
 
-        if !migration_res.success {
-            failure_class = migration_res.failure_class.or(Some(FailureClass::Unknown));
-        } else {
-            // Check semantic loss if migration technically succeeded
-            if self.config.checks.semantic_loss {
-                let semantic_loss = SemanticChecker::check_semantic_loss(
-                    &client,
-                    self.schema,
-                    candidate_state,
-                    &self.config.invariants,
-                )
-                .await?;
+            if !migration_res.success {
+                failure_class = migration_res.failure_class.or(Some(FailureClass::Unknown));
+            } else {
+                // Check semantic loss if migration technically succeeded
+                if self.config.checks.semantic_loss {
+                    let semantic_loss = SemanticChecker::check_semantic_loss(
+                        &client,
+                        self.schema,
+                        candidate_state,
+                        &self.config.invariants,
+                    )
+                    .await?;
 
-                if let Some(msg) = semantic_loss {
-                    failure_class = Some(FailureClass::SemanticLoss);
-                    let _ = isolated.destroy().await;
-                    let mut modified_res = migration_res;
-                    modified_res.success = false;
-                    modified_res.error_message = Some(msg);
-                    modified_res.failure_signature = Some(FailureSignature::new(
-                        FailureClass::SemanticLoss,
-                        None,
-                        "semantic loss",
-                    ));
-                    return Ok((modified_res, failure_class));
+                    if let Some(msg) = semantic_loss {
+                        failure_class = Some(FailureClass::SemanticLoss);
+                        let mut modified_res = migration_res;
+                        modified_res.success = false;
+                        modified_res.error_message = Some(msg);
+                        modified_res.failure_signature = Some(FailureSignature::new(
+                            FailureClass::SemanticLoss,
+                            None,
+                            "semantic loss",
+                        ));
+                        return Ok((modified_res, failure_class));
+                    }
+                }
+
+                // Check roundtrip if enabled
+                if roundtrip || self.config.checks.roundtrip {
+                    let roundtrip_loss = RoundTripTester::test_roundtrip(
+                        &client,
+                        &isolated.db_url,
+                        self.runner,
+                        self.schema,
+                        candidate_state,
+                    )
+                    .await?;
+
+                    if let Some(msg) = roundtrip_loss {
+                        failure_class = Some(FailureClass::IrreversibleMigration);
+                        let mut modified_res = migration_res;
+                        modified_res.success = false;
+                        modified_res.error_message = Some(msg);
+                        modified_res.failure_signature = Some(FailureSignature::new(
+                            FailureClass::IrreversibleMigration,
+                            None,
+                            "irreversible migration",
+                        ));
+                        return Ok((modified_res, failure_class));
+                    }
                 }
             }
 
-            // Check roundtrip if enabled
-            if roundtrip || self.config.checks.roundtrip {
-                let roundtrip_loss = RoundTripTester::test_roundtrip(
-                    &client,
-                    &isolated.db_url,
-                    self.runner,
-                    self.schema,
-                    candidate_state,
-                )
-                .await?;
-
-                if let Some(msg) = roundtrip_loss {
-                    failure_class = Some(FailureClass::IrreversibleMigration);
-                    let _ = isolated.destroy().await;
-                    let mut modified_res = migration_res;
-                    modified_res.success = false;
-                    modified_res.error_message = Some(msg);
-                    modified_res.failure_signature = Some(FailureSignature::new(
-                        FailureClass::IrreversibleMigration,
-                        None,
-                        "irreversible migration",
-                    ));
-                    return Ok((modified_res, failure_class));
-                }
-            }
+            Ok((migration_res, failure_class))
         }
+        .await;
 
-        let _ = isolated.destroy().await;
-        Ok((migration_res, failure_class))
+        let cleanup_result = isolated.destroy().await;
+        match (trial_result, cleanup_result) {
+            (Ok(result), Ok(())) => Ok(result),
+            (Err(trial_error), Ok(())) => Err(trial_error),
+            (Ok(_), Err(cleanup_error)) => Err(FaultlineError::Session(format!(
+                "Experiment cleanup failed: {}",
+                cleanup_error
+            ))),
+            (Err(trial_error), Err(cleanup_error)) => Err(FaultlineError::Session(format!(
+                "Experiment failed: {}; cleanup also failed: {}",
+                trial_error, cleanup_error
+            ))),
+        }
     }
 }

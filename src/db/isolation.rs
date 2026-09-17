@@ -64,6 +64,7 @@ impl SafetyGuard {
     }
 }
 
+#[derive(Clone)]
 pub struct IsolatedDatabase {
     pub db_name: String,
     pub db_url: String,
@@ -99,30 +100,30 @@ impl IsolatedDatabase {
             return Ok(());
         }
 
-        let client = match PgClient::connect(&self.maintenance_url).await {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to connect to maintenance db to drop {}: {}",
-                    self.db_name,
-                    e
-                );
-                return Ok(());
-            }
-        };
+        let cleanup_result = async {
+            let client = PgClient::connect(&self.maintenance_url).await?;
 
-        // Terminate any remaining connections to this test database and drop it
-        let terminate_sql = format!(
-            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{}' AND pid <> pg_backend_pid()",
-            self.db_name
-        );
-        let _ = client.execute(&terminate_sql, &[]).await;
+            // Terminate any remaining connections to this test database and drop it.
+            let terminate_sql = format!(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{}' AND pid <> pg_backend_pid()",
+                self.db_name
+            );
+            client.execute(&terminate_sql, &[]).await?;
 
-        let drop_sql = format!("DROP DATABASE IF EXISTS \"{}\" WITH (FORCE)", self.db_name);
-        client.execute(&drop_sql, &[]).await?;
+            let drop_sql = format!("DROP DATABASE IF EXISTS \"{}\" WITH (FORCE)", self.db_name);
+            client.execute(&drop_sql, &[]).await?;
 
-        tracing::debug!("Destroyed isolated database: {}", self.db_name);
-        Ok(())
+            tracing::debug!("Destroyed isolated database: {}", self.db_name);
+            Ok(())
+        }
+        .await;
+
+        if cleanup_result.is_err() {
+            // Permit an explicit retry and ensure Drop will attempt cleanup again.
+            self.cleaned.store(false, Ordering::SeqCst);
+        }
+
+        cleanup_result
     }
 }
 
@@ -133,23 +134,23 @@ impl Drop for IsolatedDatabase {
             let maintenance_url = self.maintenance_url.clone();
             let cleaned = self.cleaned.clone();
 
-            // Attempt synchronous or spawned cleanup on drop
-            tokio::spawn(async move {
-                if !cleaned.swap(true, Ordering::SeqCst) {
-                    if let Ok(client) = PgClient::connect(&maintenance_url).await {
-                        let _ = client.execute(
-                            &format!("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{}' AND pid <> pg_backend_pid()", db_name),
-                            &[],
-                        ).await;
-                        let _ = client
-                            .execute(
-                                &format!("DROP DATABASE IF EXISTS \"{}\" WITH (FORCE)", db_name),
-                                &[],
-                            )
-                            .await;
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                let isolated = Self {
+                    db_name,
+                    db_url: String::new(),
+                    maintenance_url,
+                    cleaned,
+                };
+                handle.spawn(async move {
+                    if let Err(e) = isolated.destroy().await {
+                        tracing::error!("Failed to clean up isolated database: {}", e);
                     }
-                }
-            });
+                });
+            } else {
+                tracing::error!(
+                    "Isolated database was dropped without an active runtime; explicit cleanup was not possible"
+                );
+            }
         }
     }
 }

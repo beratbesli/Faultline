@@ -40,7 +40,7 @@ async fn main() -> Result<()> {
     let _ = tracing::subscriber::set_global_default(subscriber);
 
     let storage = StorageManager::new(".");
-    let _ = storage.init();
+    storage.init()?;
 
     match cli.command {
         Commands::Init(args) => {
