@@ -2,6 +2,8 @@ use crate::db::client::PgClient;
 use crate::db::error::{signature_from_faultline_error, FailureClass, FailureSignature};
 use crate::db::isolation::IsolatedDatabase;
 use crate::error::{FaultlineError, Result};
+use crate::migration::command::CommandMigrationRunner;
+use crate::migration::MigrationRunner;
 use crate::storage::CounterexampleManifest;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -29,6 +31,7 @@ impl CounterexampleReplayer {
         let schema_path = counterexample_dir.join("schema.sql");
         let seed_path = counterexample_dir.join("seed.sql");
         let migration_path = counterexample_dir.join("migration_up.sql");
+        let migration_command_path = counterexample_dir.join("migration_up.command");
 
         if !manifest_path.exists() {
             return Err(FaultlineError::CounterexampleNotFound(
@@ -58,12 +61,22 @@ impl CounterexampleReplayer {
         };
 
         let migration_sql = if migration_path.exists() {
-            fs::read_to_string(&migration_path)?
+            Some(fs::read_to_string(&migration_path)?)
         } else {
-            return Err(FaultlineError::Config(
-                "Cannot replay: migration_up.sql not found in counterexample bundle".to_string(),
-            ));
+            None
         };
+        let migration_command = if migration_command_path.exists() {
+            Some(fs::read_to_string(&migration_command_path)?)
+        } else {
+            None
+        };
+
+        if migration_sql.is_none() && migration_command.is_none() {
+            return Err(FaultlineError::Config(
+                "Cannot replay: migration_up.sql or migration_up.command not found in counterexample bundle"
+                    .to_string(),
+            ));
+        }
 
         let mut successes = 0;
         let mut errors = Vec::new();
@@ -97,14 +110,33 @@ impl CounterexampleReplayer {
                     })?;
                 }
 
-                Ok::<Option<FailureSignature>, FaultlineError>(
-                    match client.batch_execute(&migration_sql).await {
+                let observed = if let Some(migration_sql) = &migration_sql {
+                    match client.batch_execute(migration_sql).await {
                         Ok(_) => None,
                         Err(e) => Some(signature_from_faultline_error(&e).unwrap_or_else(|| {
                             FailureSignature::new(FailureClass::Unknown, None, e.to_string())
                         })),
-                    },
-                )
+                    }
+                } else {
+                    let runner = CommandMigrationRunner::new(migration_command.clone(), None, 30);
+                    let result = runner.run_up(&client, &isolated.db_url).await?;
+                    if result.success {
+                        None
+                    } else {
+                        Some(result.failure_signature.unwrap_or_else(|| {
+                            FailureSignature::new(
+                                result.failure_class.unwrap_or(FailureClass::Unknown),
+                                result.sqlstate.clone(),
+                                result
+                                    .error_message
+                                    .as_deref()
+                                    .unwrap_or("migration failed"),
+                            )
+                        }))
+                    }
+                };
+
+                Ok::<Option<FailureSignature>, FaultlineError>(observed)
             }
             .await;
 

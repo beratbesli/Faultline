@@ -55,7 +55,7 @@ faultline report [--id <counterexample_id>] [--json]
 ```
 
 ### `faultline export`
-Exports a self-contained reproduction bundle (manifest, schema, seed, migration, reproduce.sh, README.md).
+Exports a self-contained reproduction bundle (manifest, schema, seed, migration SQL or command, reproduce.sh, README.md).
 ```bash
 faultline export <counterexample_id> <output_directory>
 ```

@@ -486,7 +486,6 @@ async fn main() -> Result<()> {
                 "manifest.json",
                 "schema.sql",
                 "seed.sql",
-                "migration_up.sql",
                 "reproduce.sh",
                 "README.md",
             ];
@@ -500,10 +499,25 @@ async fn main() -> Result<()> {
                 }
             }
 
+            let migration_sql = target_path.join("migration_up.sql");
+            let migration_command = target_path.join("migration_up.command");
+            if !migration_sql.is_file() && !migration_command.is_file() {
+                return Err(faultline::FaultlineError::Config(
+                    "Counterexample bundle is incomplete; missing migration_up.sql or migration_up.command"
+                        .to_string(),
+                ));
+            }
+
             fs::create_dir_all(&args.output_dir)?;
             for item in required_files {
                 let src = target_path.join(item);
                 fs::copy(&src, args.output_dir.join(item))?;
+            }
+            for optional in ["migration_up.sql", "migration_up.command"] {
+                let src = target_path.join(optional);
+                if src.is_file() {
+                    fs::copy(&src, args.output_dir.join(optional))?;
+                }
             }
 
             #[cfg(unix)]

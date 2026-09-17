@@ -112,4 +112,8 @@ pub trait MigrationRunner: Send + Sync {
     async fn run_up(&self, client: &PgClient, db_url: &str) -> Result<MigrationResult>;
     async fn run_down(&self, client: &PgClient, db_url: &str) -> Result<MigrationResult>;
     fn fingerprint(&self) -> Result<String>;
+
+    fn replay_command(&self) -> Option<String> {
+        None
+    }
 }

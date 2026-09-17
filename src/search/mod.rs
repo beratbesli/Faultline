@@ -341,6 +341,7 @@ impl<'a> SearchEngine<'a> {
                     &minimal_state,
                     &schema_ddl,
                     self.migration_up_sql.as_deref(),
+                    self.runner.replay_command().as_deref(),
                 ) {
                     return self.fail_search(&mut session, error);
                 }

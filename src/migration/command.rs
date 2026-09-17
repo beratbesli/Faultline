@@ -102,6 +102,10 @@ impl MigrationRunner for CommandMigrationRunner {
         }
         Ok(compute_string_fingerprint(&combined))
     }
+
+    fn replay_command(&self) -> Option<String> {
+        self.up_command.clone()
+    }
 }
 
 #[cfg(test)]

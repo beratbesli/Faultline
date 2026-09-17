@@ -14,10 +14,14 @@ pub struct CounterexampleManifest {
     pub session_id: String,
     pub timestamp: DateTime<Utc>,
     pub seed: u64,
+    #[serde(default)]
     pub experiment_seed: u64,
     pub strategy: String,
+    #[serde(default)]
     pub schema_fingerprint: String,
+    #[serde(default)]
     pub migration_fingerprint: String,
+    #[serde(default)]
     pub faultline_version: String,
     #[serde(default)]
     pub environment: Option<PostgresEnvironment>,
@@ -39,10 +43,12 @@ impl CounterexampleArtifact {
         minimal_state: &DatabaseState,
         schema_ddl: &str,
         migration_up_sql: Option<&str>,
+        migration_up_command: Option<&str>,
     ) -> Result<PathBuf> {
-        if migration_up_sql.is_none() {
+        if migration_up_sql.is_none() && migration_up_command.is_none() {
             return Err(crate::error::FaultlineError::Config(
-                "Cannot export a standalone bundle without migration_up.sql".to_string(),
+                "Cannot export a standalone bundle without migration_up.sql or migration_up.command"
+                    .to_string(),
             ));
         }
 
@@ -63,6 +69,9 @@ impl CounterexampleArtifact {
         // 4. migration_up.sql
         if let Some(up_sql) = migration_up_sql {
             fs::write(bundle_dir.join("migration_up.sql"), up_sql)?;
+        }
+        if let Some(up_command) = migration_up_command {
+            fs::write(bundle_dir.join("migration_up.command"), up_command)?;
         }
 
         // 5. reproduce.sh
@@ -112,7 +121,14 @@ psql -d "${{DATABASE_URL}}" -f seed.sql
 
 echo "Executing migration..."
 set +e
-psql -v ON_ERROR_STOP=1 -d "${{DATABASE_URL}}" -f migration_up.sql 2>migration.stderr
+if [ -f migration_up.sql ]; then
+    psql -v ON_ERROR_STOP=1 -d "${{DATABASE_URL}}" -f migration_up.sql 2>migration.stderr
+elif [ -f migration_up.command ]; then
+    bash -c "$(cat migration_up.command)" 2>migration.stderr
+else
+    echo "ERROR: no migration definition found" >&2
+    exit 1
+fi
 MIGRATION_STATUS=$?
 set -e
 
@@ -155,13 +171,41 @@ echo "Reproduction verified: expected failure reproduced."
         }
 
         // 6. README.md
+        let environment_details = manifest
+            .environment
+            .as_ref()
+            .map(|environment| {
+                let timezone = environment
+                    .settings
+                    .get("TimeZone")
+                    .or_else(|| environment.settings.get("timezone"))
+                    .map(String::as_str)
+                    .unwrap_or("unknown");
+                let lc_collate = environment
+                    .settings
+                    .get("lc_collate")
+                    .map(String::as_str)
+                    .unwrap_or("unknown");
+                format!(
+                    "- **PostgreSQL Version:** {}\n- **TimeZone:** {}\n- **Locale:** {}",
+                    environment.server_version, timezone, lc_collate
+                )
+            })
+            .unwrap_or_else(|| {
+                "- **PostgreSQL Environment:** recorded in manifest.json".to_string()
+            });
         let readme = format!(
             r#"# Faultline Counterexample: {}
 
 - **Failure Class:** {}
 - **Discovery Strategy:** {}
-- **Seed:** {}
+- **Root Seed:** {}
+- **Experiment Seed:** {}
+- **Faultline Version:** {}
+- **Schema Fingerprint:** {}
+- **Migration Fingerprint:** {}
 - **Minimal Rows:** {}
+{}
 - **Error:**
 ```text
 {}
@@ -177,7 +221,12 @@ bash reproduce.sh
             manifest.failure_class.display_name(),
             manifest.strategy,
             manifest.seed,
+            manifest.experiment_seed,
+            manifest.faultline_version,
+            manifest.schema_fingerprint,
+            manifest.migration_fingerprint,
             manifest.rows_count,
+            environment_details,
             manifest.error_message
         );
         fs::write(bundle_dir.join("README.md"), readme)?;
@@ -269,6 +318,7 @@ mod tests {
             &state,
             &schema.generate_create_ddl(),
             Some("SELECT 1;"),
+            None,
         )
         .unwrap();
         let script = fs::read_to_string(bundle.join("reproduce.sh")).unwrap();
