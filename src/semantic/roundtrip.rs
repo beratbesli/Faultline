@@ -40,16 +40,16 @@ impl RoundTripTester {
             };
 
             let count_query = format!("SELECT COUNT(*) FROM \"{}\"", table_name);
-            let rows = match client.query(&count_query, &[]).await {
-                Ok(r) => r,
-                Err(e) => {
-                    return Ok(Some(format!(
-                        "Failed to query table '{}' after rollback: {}",
-                        table_name, e
-                    )))
-                }
-            };
-            let count: i64 = rows.first().map(|r| r.get(0)).unwrap_or(0);
+            let rows = client.query(&count_query, &[]).await?;
+            let count: i64 = rows
+                .first()
+                .ok_or_else(|| {
+                    crate::error::FaultlineError::DbQuery(format!(
+                        "Count query returned no rows for table '{}'",
+                        table_name
+                    ))
+                })?
+                .get(0);
             if count as usize != table_data.rows.len() {
                 return Ok(Some(format!(
                     "Table '{}' row count mismatch after rollback: expected {}, found {}",
@@ -62,33 +62,30 @@ impl RoundTripTester {
             // Compare column values
             for col in &table.columns {
                 let query_vals = format!("SELECT \"{}\" FROM \"{}\"", col.name, table.name);
-                if let Ok(after_rows) = client.query(&query_vals, &[]).await {
-                    for (idx, row) in after_rows.iter().enumerate() {
-                        if idx < table_data.rows.len() {
-                            if let Some(before_val) = table_data.rows[idx].values.get(&col.name) {
-                                let before_lit = before_val.to_sql_literal();
-                                // Try reading after value
-                                let after_str: Option<String> = row
-                                    .try_get::<_, i32>(0)
-                                    .map(|i| i.to_string())
-                                    .or_else(|_| row.try_get::<_, i64>(0).map(|i| i.to_string()))
-                                    .or_else(|_| {
-                                        row.try_get::<_, f64>(0).map(|f| format!("{:.2}", f))
-                                    })
-                                    .or_else(|_| row.try_get::<_, String>(0))
-                                    .ok();
+                let after_rows = client.query(&query_vals, &[]).await?;
+                for (idx, row) in after_rows.iter().enumerate() {
+                    if idx < table_data.rows.len() {
+                        if let Some(before_val) = table_data.rows[idx].values.get(&col.name) {
+                            let before_lit = before_val.to_sql_literal();
+                            // Try reading after value
+                            let after_str: Option<String> = row
+                                .try_get::<_, i32>(0)
+                                .map(|i| i.to_string())
+                                .or_else(|_| row.try_get::<_, i64>(0).map(|i| i.to_string()))
+                                .or_else(|_| row.try_get::<_, f64>(0).map(|f| format!("{:.2}", f)))
+                                .or_else(|_| row.try_get::<_, String>(0))
+                                .ok();
 
-                                if let Some(val_str) = after_str {
-                                    let before_clean = before_lit.trim_matches('\'');
-                                    let after_clean = val_str.trim_matches('\'');
+                            if let Some(val_str) = after_str {
+                                let before_clean = before_lit.trim_matches('\'');
+                                let after_clean = val_str.trim_matches('\'');
 
-                                    // If before had fractional (e.g. 19.99) and after doesn't match (e.g. 19.00 or 19)
-                                    if before_clean != after_clean {
-                                        return Ok(Some(format!(
+                                // If before had fractional (e.g. 19.99) and after doesn't match (e.g. 19.00 or 19)
+                                if before_clean != after_clean {
+                                    return Ok(Some(format!(
                                             "Table '{}', column '{}' data lost after rollback: before='{}', after UP+DOWN='{}'",
                                             table.name, col.name, before_clean, after_clean
                                         )));
-                                    }
                                 }
                             }
                         }

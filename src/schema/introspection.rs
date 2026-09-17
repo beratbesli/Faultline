@@ -274,12 +274,11 @@ impl SchemaInspector {
             ORDER BY t.typname, e.enumsortorder;
         "#;
         let mut enums_map: HashMap<String, Vec<String>> = HashMap::new();
-        if let Ok(rows) = client.query(query_enums, &[]).await {
-            for row in rows {
-                let enum_name: String = row.get(0);
-                let enum_val: String = row.get(1);
-                enums_map.entry(enum_name).or_default().push(enum_val);
-            }
+        let rows = client.query(query_enums, &[]).await?;
+        for row in rows {
+            let enum_name: String = row.get(0);
+            let enum_val: String = row.get(1);
+            enums_map.entry(enum_name).or_default().push(enum_val);
         }
 
         let mut enums = Vec::new();
