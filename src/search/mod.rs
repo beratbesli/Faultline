@@ -251,14 +251,27 @@ impl<'a> SearchEngine<'a> {
                                                             m_res.failure_signature.clone()
                                                         };
 
-                                                        let _ = isolated.destroy().await;
-                                                        return reproduces;
+                                                        match isolated.destroy().await {
+                                                            Ok(()) => return reproduces,
+                                                            Err(e) => {
+                                                                tracing::error!(
+                                                                    "Minimization cleanup failed: {}",
+                                                                    e
+                                                                );
+                                                                return None;
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             }
                                         }
                                     }
-                                    let _ = isolated.destroy().await;
+                                    if let Err(e) = isolated.destroy().await {
+                                        tracing::error!(
+                                            "Minimization cleanup failed after setup error: {}",
+                                            e
+                                        );
+                                    }
                                 }
                                 None
                             })
