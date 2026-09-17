@@ -318,7 +318,9 @@ async fn main() -> Result<()> {
                     println!("No search sessions recorded yet.");
                 } else {
                     for s in sessions {
-                        println!("Session ID:       {}", s.session_id);
+                        // Session IDs are identifiers used for resuming a run, but should not
+                        // be emitted into terminal logs. Use `--json` when the exact ID is needed.
+                        println!("Session ID:       [redacted; use --json to view]");
                         println!("Started:          {}", s.started_at);
                         println!("Total Experiments:{}", s.total_experiments);
                         println!("Unique States:    {}", s.unique_states_tested);
@@ -503,9 +505,14 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Commands::Resume(args) => {
+            let session_selection = if args.session_id.is_some() {
+                "the requested session"
+            } else {
+                "the latest session"
+            };
             println!(
-                "Resuming session {:?} with additional budget {:?}",
-                args.session_id, args.experiments
+                "Resuming {} with additional budget {:?}",
+                session_selection, args.experiments
             );
             Ok(())
         }
