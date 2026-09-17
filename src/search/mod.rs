@@ -6,7 +6,7 @@ pub use experiment::ExperimentRecord;
 pub use session::TestSession;
 
 use crate::config::FaultlineConfig;
-use crate::db::client::PgClient;
+use crate::db::client::{PgClient, PostgresEnvironment};
 use crate::db::error::{FailureClass, FailureSignature};
 use crate::db::isolation::IsolatedDatabase;
 use crate::error::{FaultlineError, Result};
@@ -82,6 +82,8 @@ impl<'a> SearchEngine<'a> {
 
         let root_seed = GenerationSeed::new(budget.seed);
         let mut tested_fingerprints: HashSet<String> = HashSet::new();
+        let schema_fingerprint = self.schema.fingerprint();
+        let migration_fingerprint = self.runner.fingerprint()?;
 
         let mut best_manifest: Option<CounterexampleManifest> = None;
         let mut best_minimal_state: Option<DatabaseState> = None;
@@ -96,6 +98,7 @@ impl<'a> SearchEngine<'a> {
                 }
             }
 
+            let experiment_seed = root_seed.derive_seed(exp_idx as u64);
             let mut sub_rng = root_seed.derive_subseed(exp_idx as u64);
             let strategy = self.scheduler.get_strategy(exp_idx);
 
@@ -127,7 +130,7 @@ impl<'a> SearchEngine<'a> {
                 )
                 .await;
 
-            let (migration_res, failure_class) = trial_result?;
+            let (migration_res, failure_class, environment) = trial_result?;
 
             let counterexample_found = failure_class.is_some();
 
@@ -136,11 +139,17 @@ impl<'a> SearchEngine<'a> {
                 session_id: session_id.clone(),
                 timestamp: Utc::now(),
                 seed: budget.seed,
+                experiment_seed,
                 strategy: strategy.name().to_string(),
+                schema_fingerprint: schema_fingerprint.clone(),
+                migration_fingerprint: migration_fingerprint.clone(),
+                faultline_version: env!("CARGO_PKG_VERSION").to_string(),
+                environment: environment.clone(),
                 state_fingerprint: fingerprint.clone(),
                 rows_tested: candidate_state.total_rows(),
                 migration_result: migration_res.clone(),
                 failure_class,
+                failure_signature: migration_res.failure_signature.clone(),
                 counterexample_found,
                 duration_ms: exp_start.elapsed().as_millis() as u64,
                 state: candidate_state.clone(),
@@ -267,6 +276,11 @@ impl<'a> SearchEngine<'a> {
                     strategy: strategy.name().to_string(),
                     failure_class: f_class,
                     failure_signature: migration_res.failure_signature.clone(),
+                    experiment_seed,
+                    schema_fingerprint: schema_fingerprint.clone(),
+                    migration_fingerprint: migration_fingerprint.clone(),
+                    faultline_version: env!("CARGO_PKG_VERSION").to_string(),
+                    environment: Some(environment),
                     error_message: migration_res
                         .error_message
                         .unwrap_or_else(|| "Unknown failure".to_string()),
@@ -320,10 +334,15 @@ impl<'a> SearchEngine<'a> {
         schema_ddl: &str,
         allow_non_isolated: bool,
         roundtrip: bool,
-    ) -> Result<(crate::migration::MigrationResult, Option<FailureClass>)> {
+    ) -> Result<(
+        crate::migration::MigrationResult,
+        Option<FailureClass>,
+        PostgresEnvironment,
+    )> {
         let isolated = IsolatedDatabase::create(&self.base_db_url, allow_non_isolated).await?;
         let trial_result = async {
             let client = PgClient::connect(&isolated.db_url).await?;
+            let environment = client.get_environment().await?;
 
             // Apply baseline schema.
             client.batch_execute(schema_ddl).await?;
@@ -362,7 +381,7 @@ impl<'a> SearchEngine<'a> {
                             None,
                             "semantic loss",
                         ));
-                        return Ok((modified_res, failure_class));
+                        return Ok((modified_res, failure_class, environment.clone()));
                     }
                 }
 
@@ -387,12 +406,12 @@ impl<'a> SearchEngine<'a> {
                             None,
                             "irreversible migration",
                         ));
-                        return Ok((modified_res, failure_class));
+                        return Ok((modified_res, failure_class, environment.clone()));
                     }
                 }
             }
 
-            Ok((migration_res, failure_class))
+            Ok((migration_res, failure_class, environment))
         }
         .await;
 

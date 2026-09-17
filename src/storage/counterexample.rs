@@ -1,3 +1,4 @@
+use crate::db::client::PostgresEnvironment;
 use crate::db::error::{FailureClass, FailureSignature};
 use crate::error::Result;
 use crate::generator::DatabaseState;
@@ -13,7 +14,13 @@ pub struct CounterexampleManifest {
     pub session_id: String,
     pub timestamp: DateTime<Utc>,
     pub seed: u64,
+    pub experiment_seed: u64,
     pub strategy: String,
+    pub schema_fingerprint: String,
+    pub migration_fingerprint: String,
+    pub faultline_version: String,
+    #[serde(default)]
+    pub environment: Option<PostgresEnvironment>,
     pub failure_class: FailureClass,
     #[serde(default)]
     pub failure_signature: Option<FailureSignature>,
@@ -238,7 +245,12 @@ mod tests {
             session_id: "session".to_string(),
             timestamp: chrono::Utc::now(),
             seed: 1,
+            experiment_seed: 1,
             strategy: "collision".to_string(),
+            schema_fingerprint: schema.fingerprint(),
+            migration_fingerprint: "migration".to_string(),
+            faultline_version: env!("CARGO_PKG_VERSION").to_string(),
+            environment: None,
             failure_class: FailureClass::UniqueViolation,
             failure_signature: Some(FailureSignature::new(
                 FailureClass::UniqueViolation,

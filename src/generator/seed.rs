@@ -16,10 +16,12 @@ impl GenerationSeed {
     }
 
     pub fn derive_subseed(&self, index: u64) -> ChaCha8Rng {
-        let combined = self
-            .value
+        ChaCha8Rng::seed_from_u64(self.derive_seed(index))
+    }
+
+    pub fn derive_seed(&self, index: u64) -> u64 {
+        self.value
             .wrapping_mul(6364136223846793005)
-            .wrapping_add(index);
-        ChaCha8Rng::seed_from_u64(combined)
+            .wrapping_add(index)
     }
 }

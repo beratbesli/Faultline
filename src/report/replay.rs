@@ -73,6 +73,16 @@ impl CounterexampleReplayer {
             let attempt = async {
                 let client = PgClient::connect(&isolated.db_url).await?;
 
+                if let Some(expected_environment) = &manifest.environment {
+                    let actual_environment = client.get_environment().await?;
+                    if &actual_environment != expected_environment {
+                        return Err(FaultlineError::Config(
+                            "Replay environment differs from the recorded PostgreSQL environment"
+                                .to_string(),
+                        ));
+                    }
+                }
+
                 if !schema_sql.is_empty() {
                     client.batch_execute(&schema_sql).await?;
                 }

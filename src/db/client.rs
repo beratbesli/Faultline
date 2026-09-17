@@ -1,6 +1,15 @@
 use crate::db::error::classify_postgres_error;
 use crate::error::{FaultlineError, Result};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use tokio_postgres::{Client, NoTls, Row};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PostgresEnvironment {
+    pub server_version: String,
+    pub settings: BTreeMap<String, String>,
+    pub extensions: Vec<String>,
+}
 
 pub struct PgClient {
     client: Client,
@@ -81,5 +90,30 @@ impl PgClient {
         } else {
             Ok("unknown".to_string())
         }
+    }
+
+    pub async fn get_environment(&self) -> Result<PostgresEnvironment> {
+        let server_version = self.get_server_version().await?;
+        let setting_rows = self.query("SHOW ALL", &[]).await?;
+        let settings = setting_rows
+            .into_iter()
+            .map(|row| Ok((row.get::<_, String>(0), row.get::<_, String>(1))))
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        let extension_rows = self
+            .query(
+                "SELECT extname, extversion FROM pg_extension ORDER BY extname",
+                &[],
+            )
+            .await?;
+        let extensions = extension_rows
+            .into_iter()
+            .map(|row| format!("{}={}", row.get::<_, String>(0), row.get::<_, String>(1)))
+            .collect();
+
+        Ok(PostgresEnvironment {
+            server_version,
+            settings,
+            extensions,
+        })
     }
 }
