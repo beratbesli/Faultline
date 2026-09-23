@@ -201,7 +201,9 @@ async fn roundtrip_check_runs_up_once_and_restores_data() {
 
 #[tokio::test]
 async fn text_to_null_semantic_loss_is_exported_and_replayed() {
+    eprintln!("semantic-loss: setup start");
     let (isolated, client, schema) = setup_notes_test_database().await;
+    eprintln!("semantic-loss: setup complete");
     let loss_sql = "UPDATE notes SET body = NULL;";
     let migrations = tempfile::tempdir().unwrap();
     let loss_path = migrations.path().join("semantic_loss.sql");
@@ -248,12 +250,18 @@ async fn text_to_null_semantic_loss_is_exported_and_replayed() {
         },
     )
     .unwrap();
+    eprintln!("semantic-loss: export complete");
     let replay = CounterexampleReplayer::replay(&bundle, ROUNDTRIP_DB_URL, 1, false)
         .await
         .expect("exported semantic-loss bundle must replay");
+    eprintln!("semantic-loss: replay complete");
     assert_eq!(replay.successful_reproductions, 1);
     #[cfg(unix)]
+    eprintln!("semantic-loss: script begin");
+    #[cfg(unix)]
     assert_reproduction_script_succeeds(&bundle);
+    #[cfg(unix)]
+    eprintln!("semantic-loss: script complete");
     isolated
         .destroy()
         .await
@@ -262,7 +270,9 @@ async fn text_to_null_semantic_loss_is_exported_and_replayed() {
 
 #[tokio::test]
 async fn irreversible_migration_bundle_is_exported_and_replayed() {
+    eprintln!("irreversible: setup start");
     let (isolated, _client, schema) = setup_notes_test_database().await;
+    eprintln!("irreversible: setup complete");
     let state = sample_notes_state();
     let bundle_root = tempfile::tempdir().unwrap();
     let schema_ddl = schema.generate_create_ddl();
@@ -284,12 +294,18 @@ async fn irreversible_migration_bundle_is_exported_and_replayed() {
         },
     )
     .unwrap();
+    eprintln!("irreversible: export complete");
     let replay = CounterexampleReplayer::replay(&bundle, ROUNDTRIP_DB_URL, 1, false)
         .await
         .expect("exported irreversible-migration bundle must replay");
+    eprintln!("irreversible: replay complete");
     assert_eq!(replay.successful_reproductions, 1);
     #[cfg(unix)]
+    eprintln!("irreversible: script begin");
+    #[cfg(unix)]
     assert_reproduction_script_succeeds(&bundle);
+    #[cfg(unix)]
+    eprintln!("irreversible: script complete");
     isolated
         .destroy()
         .await
