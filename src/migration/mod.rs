@@ -116,4 +116,8 @@ pub trait MigrationRunner: Send + Sync {
     fn replay_command(&self) -> Option<String> {
         None
     }
+
+    fn replay_down_command(&self) -> Option<String> {
+        None
+    }
 }

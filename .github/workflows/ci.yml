@@ -13,6 +13,20 @@ jobs:
   test:
     name: Test & Lint
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: faultline_fixture_a
+        ports:
+          - 54329:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d faultline_fixture_a"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -21,10 +35,18 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Install PostgreSQL client & server
+      - name: Install PostgreSQL client
         run: |
           sudo apt-get update
-          sudo apt-get install -y postgresql postgresql-client
+          sudo apt-get install -y postgresql-client
+
+      - name: Prepare integration databases
+        env:
+          PGPASSWORD: password
+        run: |
+          psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 54329 -U postgres -d faultline_fixture_a -f fixtures/fixture_a_case_collision/schema.sql
+          psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 54329 -U postgres -d postgres -c 'CREATE DATABASE faultline_fixture_d'
+          psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 54329 -U postgres -d faultline_fixture_d -f fixtures/fixture_d_roundtrip/schema.sql
 
       - name: Check Formatting
         run: cargo fmt -- --check

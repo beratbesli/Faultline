@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub use counterexample::{CounterexampleArtifact, CounterexampleManifest};
+pub use counterexample::{CounterexampleArtifact, CounterexampleManifest, MigrationSources};
 
 pub struct StorageManager {
     base_dir: PathBuf,

@@ -344,6 +344,17 @@ impl DatabaseSchema {
             }
         }
 
+        // Indexes backing primary keys and UNIQUE constraints are created by
+        // those constraints. Introspection keeps only independent indexes here.
+        for table in &self.tables {
+            for index in &table.indexes {
+                if let Some(definition) = &index.definition {
+                    ddl.push_str(definition.trim_end_matches(';'));
+                    ddl.push_str(";\n");
+                }
+            }
+        }
+
         ddl
     }
 }
@@ -453,5 +464,39 @@ mod tests {
         };
 
         assert_eq!(schema1.fingerprint(), schema2.fingerprint());
+    }
+
+    #[test]
+    fn clone_ddl_keeps_standalone_unique_and_regular_indexes() {
+        let schema = DatabaseSchema {
+            tables: vec![Table {
+                name: "users".to_string(),
+                schema_name: "public".to_string(),
+                columns: vec![Column {
+                    name: "email".to_string(),
+                    data_type: DataType::Text,
+                    is_nullable: false,
+                    default_value: None,
+                    is_identity: false,
+                    is_generated: false,
+                }],
+                primary_key: None,
+                foreign_keys: vec![],
+                unique_constraints: vec![],
+                check_constraints: vec![],
+                indexes: vec![
+                    Index { name: "users_email_unique".to_string(), columns: vec![], is_unique: true, definition: Some("CREATE UNIQUE INDEX users_email_unique ON public.users USING btree (email)".to_string()) },
+                    Index { name: "users_email_lookup".to_string(), columns: vec![], is_unique: false, definition: Some("CREATE INDEX users_email_lookup ON public.users USING btree (email)".to_string()) },
+                ],
+            }],
+            enums: vec![],
+        };
+        let ddl = schema.generate_create_ddl();
+        assert!(ddl.contains(
+            "CREATE UNIQUE INDEX users_email_unique ON public.users USING btree (email);"
+        ));
+        assert!(
+            ddl.contains("CREATE INDEX users_email_lookup ON public.users USING btree (email);")
+        );
     }
 }
