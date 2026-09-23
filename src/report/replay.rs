@@ -31,7 +31,6 @@ impl CounterexampleReplayer {
         repeat_count: usize,
         allow_non_isolated: bool,
     ) -> Result<ReplayResult> {
-        eprintln!("replay: begin");
         let manifest_path = counterexample_dir.join("manifest.json");
         let schema_path = counterexample_dir.join("schema.sql");
         let seed_path = counterexample_dir.join("seed.sql");
@@ -54,7 +53,6 @@ impl CounterexampleReplayer {
 
         let manifest_content = fs::read_to_string(&manifest_path)?;
         let manifest: CounterexampleManifest = serde_json::from_str(&manifest_content)?;
-        eprintln!("replay: manifest loaded");
 
         let schema_sql = if schema_path.exists() {
             fs::read_to_string(&schema_path)?
@@ -102,12 +100,9 @@ impl CounterexampleReplayer {
         let mut errors = Vec::new();
 
         for _ in 0..repeat_count {
-            eprintln!("replay: creating isolated db");
             let isolated = IsolatedDatabase::create(base_db_url, allow_non_isolated).await?;
-            eprintln!("replay: isolated db created");
             let attempt = async {
                 let client = PgClient::connect(&isolated.db_url).await?;
-                eprintln!("replay: connected");
 
                 if let Some(expected_environment) = &manifest.environment {
                     let actual_environment = client.get_environment().await?;
@@ -134,12 +129,9 @@ impl CounterexampleReplayer {
                 }
 
                 let schema = SchemaInspector::introspect(&client, None).await?;
-                eprintln!("replay: schema introspected");
                 let before = CapturedState::capture(&client, &schema, &manifest.invariants).await?;
-                eprintln!("replay: state captured");
 
                 let result = runner.run_up(&client, &isolated.db_url).await?;
-                eprintln!("replay: up run");
                 let observed = if !result.success {
                     Some(result.failure_signature.unwrap_or_else(|| {
                         FailureSignature::new(
@@ -163,7 +155,6 @@ impl CounterexampleReplayer {
                         FailureSignature::new(FailureClass::SemanticLoss, None, "semantic loss")
                     })
                 } else if manifest.failure_class == FailureClass::IrreversibleMigration {
-                    eprintln!("replay: roundtrip check begin");
                     RoundTripTester::test_roundtrip(
                         &client,
                         &isolated.db_url,
@@ -186,10 +177,8 @@ impl CounterexampleReplayer {
                 Ok::<Option<FailureSignature>, FaultlineError>(observed)
             }
             .await;
-            eprintln!("replay: attempt done");
 
             let cleanup = isolated.destroy().await;
-            eprintln!("replay: cleanup done");
             let observed = match (attempt, cleanup) {
                 (Ok(observed), Ok(())) => observed,
                 (Err(attempt_error), Ok(())) => return Err(attempt_error),

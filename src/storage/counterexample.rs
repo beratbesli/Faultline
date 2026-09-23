@@ -145,6 +145,7 @@ impl CounterexampleArtifact {
         let script = format!(
             r#"#!/usr/bin/env bash
 set -e
+cd -- "$(dirname -- "${{BASH_SOURCE[0]}}")"
 
 echo "=== FAULTLINE COUNTEREXAMPLE REPRODUCER ==="
 echo "Counterexample ID: {}"
