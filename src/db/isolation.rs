@@ -158,10 +158,9 @@ impl Drop for IsolatedDatabase {
 fn derive_db_urls(base_url: &str, target_db_name: &str) -> Result<(String, String)> {
     let mut parts: Vec<&str> = base_url.split('/').collect();
     if parts.len() < 4 {
-        return Err(FaultlineError::Config(format!(
-            "Invalid database URL format: {}",
-            base_url
-        )));
+        return Err(FaultlineError::Config(
+            "Invalid database URL format".to_string(),
+        ));
     }
 
     let last = parts.pop().unwrap();

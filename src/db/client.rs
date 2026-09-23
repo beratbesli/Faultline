@@ -1,4 +1,5 @@
 use crate::db::error::classify_postgres_error;
+use crate::db::redaction::redact_database_url_in_text;
 use crate::error::{FaultlineError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -19,13 +20,20 @@ pub struct PgClient {
 impl PgClient {
     pub async fn connect(url: &str) -> Result<Self> {
         let (client, connection) = tokio_postgres::connect(url, NoTls).await.map_err(|e| {
-            FaultlineError::DbConnection(format!("Failed to connect to {}: {}", url, e))
+            FaultlineError::DbConnection(format!(
+                "Failed to connect to PostgreSQL: {}",
+                redact_database_url_in_text(&e.to_string(), url)
+            ))
         })?;
 
         // Spawn connection task to keep connection alive
+        let connection_url = url.to_string();
         tokio::spawn(async move {
             if let Err(e) = connection.await {
-                tracing::debug!("Postgres connection error: {}", e);
+                tracing::debug!(
+                    "Postgres connection error: {}",
+                    redact_database_url_in_text(&e.to_string(), &connection_url)
+                );
             }
         });
 
@@ -126,5 +134,16 @@ mod tests {
     async fn connection_failures_are_classified_separately() {
         let result = PgClient::connect("postgres://127.0.0.1:1/faultline_test").await;
         assert!(matches!(result, Err(FaultlineError::DbConnection(_))));
+    }
+
+    #[tokio::test]
+    async fn connection_failure_never_echoes_password_or_query_secret() {
+        let url = "postgres://user:supersecret@127.0.0.1:1/test?application_name=private_token";
+        let error = match PgClient::connect(url).await {
+            Ok(_) => panic!("connection unexpectedly succeeded"),
+            Err(error) => error.to_string(),
+        };
+        assert!(!error.contains("supersecret"));
+        assert!(!error.contains("private_token"));
     }
 }
