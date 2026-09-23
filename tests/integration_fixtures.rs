@@ -104,27 +104,27 @@ async fn test_end_to_end_case_collision_scenario() {
 
 #[tokio::test]
 async fn generated_schema_keeps_independent_unique_and_expression_indexes() {
-    let source = PgClient::connect(TEST_DB_URL)
+    let source = PgClient::connect(ROUNDTRIP_DB_URL)
         .await
-        .expect("PostgreSQL fixture on port 54329 is required");
+        .expect("PostgreSQL roundtrip fixture on port 54329 is required");
     let schema = SchemaInspector::introspect(&source, None)
         .await
-        .expect("fixture A schema must be introspectable");
-    let users = schema.get_table("users").expect("fixture has users table");
-    assert!(users
+        .expect("roundtrip fixture schema must be introspectable");
+    let notes = schema.get_table("notes").expect("fixture has notes table");
+    assert!(notes
         .indexes
         .iter()
-        .any(|index| index.name == "users_email_exact_unique" && index.is_unique));
-    assert!(users.indexes.iter().any(|index| {
-        index.name == "users_email_lower_lookup"
+        .any(|index| index.name == "notes_body_exact_unique" && index.is_unique));
+    assert!(notes.indexes.iter().any(|index| {
+        index.name == "notes_body_lower_lookup"
             && index
                 .definition
                 .as_deref()
                 .unwrap_or_default()
-                .contains("lower(email)")
+                .contains("lower(body)")
     }));
 
-    let isolated = IsolatedDatabase::create(TEST_DB_URL, false)
+    let isolated = IsolatedDatabase::create(ROUNDTRIP_DB_URL, false)
         .await
         .expect("an isolated clone database must be available");
     let clone = PgClient::connect(&isolated.db_url)
@@ -137,20 +137,20 @@ async fn generated_schema_keeps_independent_unique_and_expression_indexes() {
     let cloned_schema = SchemaInspector::introspect(&clone, None)
         .await
         .expect("cloned schema must be introspectable");
-    let cloned_users = cloned_schema
-        .get_table("users")
-        .expect("clone has users table");
-    assert!(cloned_users
+    let cloned_notes = cloned_schema
+        .get_table("notes")
+        .expect("clone has notes table");
+    assert!(cloned_notes
         .indexes
         .iter()
-        .any(|index| index.name == "users_email_exact_unique" && index.is_unique));
-    assert!(cloned_users.indexes.iter().any(|index| {
-        index.name == "users_email_lower_lookup"
+        .any(|index| index.name == "notes_body_exact_unique" && index.is_unique));
+    assert!(cloned_notes.indexes.iter().any(|index| {
+        index.name == "notes_body_lower_lookup"
             && index
                 .definition
                 .as_deref()
                 .unwrap_or_default()
-                .contains("lower(email)")
+                .contains("lower(body)")
     }));
     isolated
         .destroy()
@@ -159,28 +159,8 @@ async fn generated_schema_keeps_independent_unique_and_expression_indexes() {
 }
 
 #[tokio::test]
-async fn semantic_loss_and_irreversibility_are_exported_and_replayed() {
-    let source = PgClient::connect(ROUNDTRIP_DB_URL)
-        .await
-        .expect("PostgreSQL roundtrip fixture on port 54329 is required");
-    let schema = SchemaInspector::introspect(&source, None)
-        .await
-        .expect("roundtrip fixture schema must be introspectable");
-    let isolated = IsolatedDatabase::create(ROUNDTRIP_DB_URL, false)
-        .await
-        .expect("an isolated roundtrip database must be available");
-    let client = PgClient::connect(&isolated.db_url)
-        .await
-        .expect("isolated database must be reachable");
-    client
-        .batch_execute(&schema.generate_create_ddl())
-        .await
-        .expect("roundtrip schema DDL must execute");
-    client
-        .batch_execute("INSERT INTO notes (id, body) VALUES (1, 'keep this text');")
-        .await
-        .expect("fixture must contain a text value to preserve");
-
+async fn roundtrip_check_runs_up_once_and_restores_data() {
+    let (isolated, client, schema) = setup_notes_test_database().await;
     let before =
         faultline::semantic::state::CapturedState::capture(&client, &schema, &Default::default())
             .await
@@ -213,8 +193,17 @@ async fn semantic_loss_and_irreversibility_are_exported_and_replayed() {
             .is_none(),
         "roundtrip checking must not run UP a second time"
     );
+    isolated
+        .destroy()
+        .await
+        .expect("roundtrip database must be cleaned up");
+}
 
+#[tokio::test]
+async fn text_to_null_semantic_loss_is_exported_and_replayed() {
+    let (isolated, client, schema) = setup_notes_test_database().await;
     let loss_sql = "UPDATE notes SET body = NULL;";
+    let migrations = tempfile::tempdir().unwrap();
     let loss_path = migrations.path().join("semantic_loss.sql");
     std::fs::write(&loss_path, loss_sql).unwrap();
     let loss_runner = SqlMigrationRunner::new(Some(loss_path), None);
@@ -245,11 +234,11 @@ async fn semantic_loss_and_irreversibility_are_exported_and_replayed() {
     let state = sample_notes_state();
     let bundle_root = tempfile::tempdir().unwrap();
     let schema_ddl = schema.generate_create_ddl();
-    let semantic_manifest =
+    let manifest =
         counterexample_manifest("semantic_text_to_null", FailureClass::SemanticLoss, &state);
-    let semantic_bundle = CounterexampleArtifact::export_bundle_with_sources(
+    let bundle = CounterexampleArtifact::export_bundle_with_sources(
         bundle_root.path(),
-        &semantic_manifest,
+        &manifest,
         &schema,
         &state,
         &schema_ddl,
@@ -259,43 +248,82 @@ async fn semantic_loss_and_irreversibility_are_exported_and_replayed() {
         },
     )
     .unwrap();
-    let semantic_replay =
-        CounterexampleReplayer::replay(&semantic_bundle, ROUNDTRIP_DB_URL, 1, false)
-            .await
-            .expect("exported semantic-loss bundle must replay");
-    assert_eq!(semantic_replay.successful_reproductions, 1);
+    let replay = CounterexampleReplayer::replay(&bundle, ROUNDTRIP_DB_URL, 1, false)
+        .await
+        .expect("exported semantic-loss bundle must replay");
+    assert_eq!(replay.successful_reproductions, 1);
     #[cfg(unix)]
-    assert_reproduction_script_succeeds(&semantic_bundle);
+    assert_reproduction_script_succeeds(&bundle);
+    isolated
+        .destroy()
+        .await
+        .expect("semantic-loss database must be cleaned up");
+}
 
-    let irreversible_manifest = counterexample_manifest(
+#[tokio::test]
+async fn irreversible_migration_bundle_is_exported_and_replayed() {
+    let (isolated, _client, schema) = setup_notes_test_database().await;
+    let state = sample_notes_state();
+    let bundle_root = tempfile::tempdir().unwrap();
+    let schema_ddl = schema.generate_create_ddl();
+    let manifest = counterexample_manifest(
         "roundtrip_text_loss",
         FailureClass::IrreversibleMigration,
         &state,
     );
-    let irreversible_bundle = CounterexampleArtifact::export_bundle_with_sources(
+    let bundle = CounterexampleArtifact::export_bundle_with_sources(
         bundle_root.path(),
-        &irreversible_manifest,
+        &manifest,
         &schema,
         &state,
         &schema_ddl,
         &MigrationSources {
-            up_sql: Some(loss_sql.to_string()),
+            up_sql: Some("UPDATE notes SET body = NULL;".to_string()),
             down_sql: Some("SELECT 1;".to_string()),
             ..MigrationSources::default()
         },
     )
     .unwrap();
-    let irreversible_replay =
-        CounterexampleReplayer::replay(&irreversible_bundle, ROUNDTRIP_DB_URL, 1, false)
-            .await
-            .expect("exported irreversible-migration bundle must replay");
-    assert_eq!(irreversible_replay.successful_reproductions, 1);
+    let replay = CounterexampleReplayer::replay(&bundle, ROUNDTRIP_DB_URL, 1, false)
+        .await
+        .expect("exported irreversible-migration bundle must replay");
+    assert_eq!(replay.successful_reproductions, 1);
     #[cfg(unix)]
-    assert_reproduction_script_succeeds(&irreversible_bundle);
+    assert_reproduction_script_succeeds(&bundle);
     isolated
         .destroy()
         .await
-        .expect("roundtrip database must be cleaned up");
+        .expect("irreversible database must be cleaned up");
+}
+
+async fn setup_notes_test_database() -> (
+    IsolatedDatabase,
+    PgClient,
+    faultline::schema::DatabaseSchema,
+) {
+    let schema = {
+        let source = PgClient::connect(ROUNDTRIP_DB_URL)
+            .await
+            .expect("PostgreSQL roundtrip fixture on port 54329 is required");
+        SchemaInspector::introspect(&source, None)
+            .await
+            .expect("roundtrip fixture schema must be introspectable")
+    };
+    let isolated = IsolatedDatabase::create(ROUNDTRIP_DB_URL, false)
+        .await
+        .expect("an isolated roundtrip database must be available");
+    let client = PgClient::connect(&isolated.db_url)
+        .await
+        .expect("isolated database must be reachable");
+    client
+        .batch_execute(&schema.generate_create_ddl())
+        .await
+        .expect("roundtrip schema DDL must execute");
+    client
+        .batch_execute("INSERT INTO notes (id, body) VALUES (1, 'keep this text');")
+        .await
+        .expect("fixture must contain a text value to preserve");
+    (isolated, client, schema)
 }
 
 #[cfg(unix)]
