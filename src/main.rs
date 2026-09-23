@@ -12,7 +12,7 @@ use faultline::migration::MigrationRunner;
 use faultline::report::{CounterexampleReplayer, ReportGenerator};
 use faultline::schema::introspection::SchemaInspector;
 use faultline::search::{SearchBudget, SearchEngine};
-use faultline::storage::{CounterexampleManifest, StorageManager};
+use faultline::storage::{CounterexampleManifest, MigrationSources, StorageManager};
 use faultline::strategy::StrategyScheduler;
 use std::env;
 use std::fs;
@@ -236,6 +236,17 @@ async fn main() -> Result<()> {
             } else {
                 None
             };
+            let down_sql_content = if let Some(p) = &config.migration.down_sql {
+                fs::read_to_string(p).ok()
+            } else {
+                None
+            };
+            let migration_sources = MigrationSources {
+                up_sql: up_sql_content,
+                up_command: runner.replay_command(),
+                down_sql: down_sql_content,
+                down_command: runner.replay_down_command(),
+            };
 
             let configured_strategies = if let Some(s) = args.strategy {
                 vec![s]
@@ -260,14 +271,14 @@ async fn main() -> Result<()> {
                 roundtrip: args.roundtrip || config.checks.roundtrip,
             };
 
-            let engine = SearchEngine::new(
+            let engine = SearchEngine::with_migration_sources(
                 &config,
                 &schema,
                 runner.as_ref(),
                 &scheduler,
                 &storage,
                 db_url,
-                up_sql_content,
+                migration_sources,
             );
 
             let summary = engine.run_search(budget).await?;

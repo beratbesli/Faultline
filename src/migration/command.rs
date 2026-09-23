@@ -106,6 +106,10 @@ impl MigrationRunner for CommandMigrationRunner {
     fn replay_command(&self) -> Option<String> {
         self.up_command.clone()
     }
+
+    fn replay_down_command(&self) -> Option<String> {
+        self.down_command.clone()
+    }
 }
 
 #[cfg(test)]

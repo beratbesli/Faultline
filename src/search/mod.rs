@@ -15,8 +15,11 @@ use crate::generator::DatabaseState;
 use crate::migration::MigrationRunner;
 use crate::minimizer::Minimizer;
 use crate::schema::DatabaseSchema;
+use crate::semantic::state::CapturedState;
 use crate::semantic::{RoundTripTester, SemanticChecker};
-use crate::storage::{CounterexampleArtifact, CounterexampleManifest, StorageManager};
+use crate::storage::{
+    CounterexampleArtifact, CounterexampleManifest, MigrationSources, StorageManager,
+};
 use crate::strategy::StrategyScheduler;
 use chrono::Utc;
 use std::collections::HashSet;
@@ -51,7 +54,7 @@ pub struct SearchEngine<'a> {
     pub scheduler: &'a StrategyScheduler,
     pub storage: &'a StorageManager,
     pub base_db_url: String,
-    pub migration_up_sql: Option<String>,
+    pub migration_sources: MigrationSources,
 }
 
 impl<'a> SearchEngine<'a> {
@@ -64,6 +67,29 @@ impl<'a> SearchEngine<'a> {
         base_db_url: String,
         migration_up_sql: Option<String>,
     ) -> Self {
+        Self::with_migration_sources(
+            config,
+            schema,
+            runner,
+            scheduler,
+            storage,
+            base_db_url,
+            MigrationSources {
+                up_sql: migration_up_sql,
+                ..MigrationSources::default()
+            },
+        )
+    }
+
+    pub fn with_migration_sources(
+        config: &'a FaultlineConfig,
+        schema: &'a DatabaseSchema,
+        runner: &'a (dyn MigrationRunner + 'a),
+        scheduler: &'a StrategyScheduler,
+        storage: &'a StorageManager,
+        base_db_url: String,
+        migration_sources: MigrationSources,
+    ) -> Self {
         Self {
             config,
             schema,
@@ -71,7 +97,7 @@ impl<'a> SearchEngine<'a> {
             scheduler,
             storage,
             base_db_url,
-            migration_up_sql,
+            migration_sources,
         }
     }
 
@@ -238,6 +264,7 @@ impl<'a> SearchEngine<'a> {
                                         if client.batch_execute(&ddl).await.is_ok() {
                                             if let Ok(inserts) = cand.to_insert_sql(schema) {
                                                 if client.batch_execute(&inserts).await.is_ok() {
+                                                    if let Ok(before) = CapturedState::capture(&client, schema, &config_ref.invariants).await {
                                                     if let Ok(m_res) = runner
                                                         .run_up(&client, &isolated.db_url)
                                                         .await
@@ -247,7 +274,7 @@ impl<'a> SearchEngine<'a> {
                                                                 SemanticChecker::check_semantic_loss(
                                                                     &client,
                                                                     schema,
-                                                                    &cand,
+                                                                    &before,
                                                                     &config_ref.invariants,
                                                                 ).await.ok().and_then(|loss| loss.map(|_| {
                                                                     FailureSignature::new(
@@ -260,19 +287,19 @@ impl<'a> SearchEngine<'a> {
                                                                 None
                                                             }
                                                         } else if target_failure_class == FailureClass::IrreversibleMigration {
-                                                            RoundTripTester::test_roundtrip(
+                                                            if m_res.success { RoundTripTester::test_roundtrip(
                                                                 &client,
                                                                 &isolated.db_url,
                                                                 runner,
                                                                 schema,
-                                                                &cand,
+                                                                &before,
                                                             ).await.ok().and_then(|loss| loss.map(|_| {
                                                                 FailureSignature::new(
                                                                     FailureClass::IrreversibleMigration,
                                                                     None,
                                                                     "irreversible migration",
                                                                 )
-                                                            }))
+                                                            })) } else { None }
                                 } else if let Some(expected) = &expected_signature {
                                                             m_res
                                                                 .failure_signature
@@ -293,6 +320,7 @@ impl<'a> SearchEngine<'a> {
                                                                 return None;
                                                             }
                                                         }
+                                                    }
                                                     }
                                                 }
                                             }
@@ -321,6 +349,7 @@ impl<'a> SearchEngine<'a> {
                     strategy: strategy.name().to_string(),
                     failure_class: f_class,
                     failure_signature: migration_res.failure_signature.clone(),
+                    invariants: self.config.invariants.clone(),
                     experiment_seed,
                     schema_fingerprint: schema_fingerprint.clone(),
                     migration_fingerprint: migration_fingerprint.clone(),
@@ -334,14 +363,13 @@ impl<'a> SearchEngine<'a> {
                 };
 
                 // Export counterexample bundle
-                if let Err(error) = CounterexampleArtifact::export_bundle(
+                if let Err(error) = CounterexampleArtifact::export_bundle_with_sources(
                     &self.storage.counterexamples_dir(),
                     &manifest,
                     self.schema,
                     &minimal_state,
                     &schema_ddl,
-                    self.migration_up_sql.as_deref(),
-                    self.runner.replay_command().as_deref(),
+                    &self.migration_sources,
                 ) {
                     return self.fail_search(&mut session, error);
                 }
@@ -404,6 +432,9 @@ impl<'a> SearchEngine<'a> {
                 })?;
             }
 
+            let before =
+                CapturedState::capture(&client, self.schema, &self.config.invariants).await?;
+
             // Run migration UP.
             let migration_res = self.runner.run_up(&client, &isolated.db_url).await?;
 
@@ -417,7 +448,7 @@ impl<'a> SearchEngine<'a> {
                     let semantic_loss = SemanticChecker::check_semantic_loss(
                         &client,
                         self.schema,
-                        candidate_state,
+                        &before,
                         &self.config.invariants,
                     )
                     .await?;
@@ -443,7 +474,7 @@ impl<'a> SearchEngine<'a> {
                         &isolated.db_url,
                         self.runner,
                         self.schema,
-                        candidate_state,
+                        &before,
                     )
                     .await?;
 

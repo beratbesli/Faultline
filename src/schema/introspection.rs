@@ -241,8 +241,10 @@ impl SchemaInspector {
             JOIN pg_class t ON t.oid = ix.indrelid
             JOIN pg_class i ON i.oid = ix.indexrelid
             JOIN pg_namespace n ON n.oid = t.relnamespace
+            LEFT JOIN pg_constraint constraint_index ON constraint_index.conindid = ix.indexrelid
             WHERE n.nspname = 'public'
               AND t.relkind = 'r'
+              AND constraint_index.oid IS NULL
             ORDER BY t.relname, i.relname;
         "#;
         let rows = client.query(query_indexes, &[]).await?;

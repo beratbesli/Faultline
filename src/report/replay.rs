@@ -1,9 +1,13 @@
 use crate::db::client::PgClient;
-use crate::db::error::{signature_from_faultline_error, FailureClass, FailureSignature};
+use crate::db::error::{FailureClass, FailureSignature};
 use crate::db::isolation::IsolatedDatabase;
 use crate::error::{FaultlineError, Result};
 use crate::migration::command::CommandMigrationRunner;
+use crate::migration::sql::SqlMigrationRunner;
 use crate::migration::MigrationRunner;
+use crate::schema::introspection::SchemaInspector;
+use crate::semantic::state::CapturedState;
+use crate::semantic::{RoundTripTester, SemanticChecker};
 use crate::storage::CounterexampleManifest;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -32,6 +36,8 @@ impl CounterexampleReplayer {
         let seed_path = counterexample_dir.join("seed.sql");
         let migration_path = counterexample_dir.join("migration_up.sql");
         let migration_command_path = counterexample_dir.join("migration_up.command");
+        let migration_down_path = counterexample_dir.join("migration_down.sql");
+        let migration_down_command_path = counterexample_dir.join("migration_down.command");
 
         if !manifest_path.exists() {
             return Err(FaultlineError::CounterexampleNotFound(
@@ -60,23 +66,35 @@ impl CounterexampleReplayer {
             String::new()
         };
 
-        let migration_sql = if migration_path.exists() {
-            Some(fs::read_to_string(&migration_path)?)
-        } else {
-            None
-        };
         let migration_command = if migration_command_path.exists() {
             Some(fs::read_to_string(&migration_command_path)?)
         } else {
             None
         };
 
-        if migration_sql.is_none() && migration_command.is_none() {
+        if !migration_path.exists() && migration_command.is_none() {
             return Err(FaultlineError::Config(
                 "Cannot replay: migration_up.sql or migration_up.command not found in counterexample bundle"
                     .to_string(),
             ));
         }
+
+        let runner: Box<dyn MigrationRunner> = if migration_path.exists() {
+            Box::new(SqlMigrationRunner::new(
+                Some(migration_path),
+                migration_down_path.exists().then_some(migration_down_path),
+            ))
+        } else {
+            let down_command = migration_down_command_path
+                .exists()
+                .then(|| fs::read_to_string(migration_down_command_path))
+                .transpose()?;
+            Box::new(CommandMigrationRunner::new(
+                migration_command,
+                down_command,
+                30,
+            ))
+        };
 
         let mut successes = 0;
         let mut errors = Vec::new();
@@ -110,30 +128,50 @@ impl CounterexampleReplayer {
                     })?;
                 }
 
-                let observed = if let Some(migration_sql) = &migration_sql {
-                    match client.batch_execute(migration_sql).await {
-                        Ok(_) => None,
-                        Err(e) => Some(signature_from_faultline_error(&e).unwrap_or_else(|| {
-                            FailureSignature::new(FailureClass::Unknown, None, e.to_string())
-                        })),
-                    }
+                let schema = SchemaInspector::introspect(&client, None).await?;
+                let before = CapturedState::capture(&client, &schema, &manifest.invariants).await?;
+
+                let result = runner.run_up(&client, &isolated.db_url).await?;
+                let observed = if !result.success {
+                    Some(result.failure_signature.unwrap_or_else(|| {
+                        FailureSignature::new(
+                            result.failure_class.unwrap_or(FailureClass::Unknown),
+                            result.sqlstate,
+                            result
+                                .error_message
+                                .as_deref()
+                                .unwrap_or("migration failed"),
+                        )
+                    }))
+                } else if manifest.failure_class == FailureClass::SemanticLoss {
+                    SemanticChecker::check_semantic_loss(
+                        &client,
+                        &schema,
+                        &before,
+                        &manifest.invariants,
+                    )
+                    .await?
+                    .map(|_| {
+                        FailureSignature::new(FailureClass::SemanticLoss, None, "semantic loss")
+                    })
+                } else if manifest.failure_class == FailureClass::IrreversibleMigration {
+                    RoundTripTester::test_roundtrip(
+                        &client,
+                        &isolated.db_url,
+                        runner.as_ref(),
+                        &schema,
+                        &before,
+                    )
+                    .await?
+                    .map(|_| {
+                        FailureSignature::new(
+                            FailureClass::IrreversibleMigration,
+                            None,
+                            "irreversible migration",
+                        )
+                    })
                 } else {
-                    let runner = CommandMigrationRunner::new(migration_command.clone(), None, 30);
-                    let result = runner.run_up(&client, &isolated.db_url).await?;
-                    if result.success {
-                        None
-                    } else {
-                        Some(result.failure_signature.unwrap_or_else(|| {
-                            FailureSignature::new(
-                                result.failure_class.unwrap_or(FailureClass::Unknown),
-                                result.sqlstate.clone(),
-                                result
-                                    .error_message
-                                    .as_deref()
-                                    .unwrap_or("migration failed"),
-                            )
-                        }))
-                    }
+                    None
                 };
 
                 Ok::<Option<FailureSignature>, FaultlineError>(observed)
