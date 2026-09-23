@@ -1,4 +1,5 @@
 use crate::db::client::PgClient;
+use crate::db::redaction::redact_database_url_in_text;
 use crate::error::{FaultlineError, Result};
 use crate::migration::fingerprint::compute_string_fingerprint;
 use crate::migration::{MigrationResult, MigrationRunner};
@@ -45,8 +46,10 @@ impl CommandMigrationRunner {
         match timeout_result {
             Ok(Ok(output)) => {
                 let duration = start.elapsed();
-                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                let stdout =
+                    redact_database_url_in_text(&String::from_utf8_lossy(&output.stdout), db_url);
+                let stderr =
+                    redact_database_url_in_text(&String::from_utf8_lossy(&output.stderr), db_url);
 
                 if output.status.success() {
                     Ok(MigrationResult::success(duration, stdout))
@@ -165,5 +168,18 @@ mod tests {
         assert!(!result.success);
         assert_eq!(result.failure_class, Some(FailureClass::CommandFailure));
         assert_eq!(result.exit_code, None);
+    }
+
+    #[tokio::test]
+    async fn command_output_cannot_echo_database_url_secrets() {
+        let runner = CommandMigrationRunner::new(None, None, 1);
+        let url = "postgres://user:password123@localhost/test?token=private_token";
+        let result = runner
+            .execute_command("printf '%s' \"$DATABASE_URL\" >&2; exit 3", url)
+            .await
+            .expect("command runs");
+        assert!(!result.stderr.contains("password123"));
+        assert!(!result.stderr.contains("private_token"));
+        assert!(!result.error_message.unwrap().contains("password123"));
     }
 }

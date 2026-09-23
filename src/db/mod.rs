@@ -1,6 +1,7 @@
 pub mod client;
 pub mod error;
 pub mod isolation;
+pub mod redaction;
 
 pub use error::{FailureClass, FailureSignature};
 

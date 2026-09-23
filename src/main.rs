@@ -121,9 +121,7 @@ async fn main() -> Result<()> {
                                     .unwrap_or_else(|_| "unknown".to_string());
                                 println!("  [OK] Successfully connected to PostgreSQL (version: {}, database: {})", ver, db);
                             }
-                            Err(e) => {
-                                println!("  [WARN] Unable to connect to database at {}: {}", url, e)
-                            }
+                            Err(e) => println!("  [WARN] Unable to connect to database: {}", e),
                         }
                     }
                     Err(e) => println!("  [INFO] Database URL not set: {}", e),
