@@ -262,7 +262,9 @@ async fn text_to_null_semantic_loss_is_exported_and_replayed() {
 
 #[tokio::test]
 async fn irreversible_migration_bundle_is_exported_and_replayed() {
+    eprintln!("irreversible: setup start");
     let (isolated, _client, schema) = setup_notes_test_database().await;
+    eprintln!("irreversible: setup complete");
     let state = sample_notes_state();
     let bundle_root = tempfile::tempdir().unwrap();
     let schema_ddl = schema.generate_create_ddl();
@@ -284,9 +286,11 @@ async fn irreversible_migration_bundle_is_exported_and_replayed() {
         },
     )
     .unwrap();
+    eprintln!("irreversible: export complete");
     let replay = CounterexampleReplayer::replay(&bundle, ROUNDTRIP_DB_URL, 1, false)
         .await
         .expect("exported irreversible-migration bundle must replay");
+    eprintln!("irreversible: replay complete");
     assert_eq!(replay.successful_reproductions, 1);
     #[cfg(unix)]
     assert_reproduction_script_succeeds(&bundle);
